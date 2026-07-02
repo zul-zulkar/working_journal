@@ -1,0 +1,976 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Helvetica Neue",Helvetica,Arial,sans-serif;background:#000}
+  input,textarea,select,button{font-family:inherit}
+  textarea{resize:vertical}
+  [data-theme=light]{--bg:#f5f5f7;--surface:#ffffff;--surface-2:#fbfbfd;--text:#1d1d1f;--text-2:#6e6e73;--text-3:#a1a1a6;--sep:rgba(0,0,0,.08);--sep-2:rgba(0,0,0,.14);--fill:rgba(118,118,128,.09);--fill-2:rgba(118,118,128,.16);--accent:#0A84FF;--accent-soft:rgba(10,132,255,.12);--on-accent:#fff;--shadow:0 1px 2px rgba(0,0,0,.04),0 4px 16px rgba(0,0,0,.06);--shadow-lg:0 16px 60px rgba(0,0,0,.22);--scrim:rgba(0,0,0,.30)}
+  [data-theme=dark]{--bg:#000000;--surface:#1c1c1e;--surface-2:#2c2c2e;--text:#f5f5f7;--text-2:#aeaeb2;--text-3:#8e8e93;--sep:rgba(255,255,255,.11);--sep-2:rgba(255,255,255,.18);--fill:rgba(118,118,128,.22);--fill-2:rgba(118,118,128,.34);--accent:#0A84FF;--accent-soft:rgba(10,132,255,.22);--on-accent:#fff;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 28px rgba(0,0,0,.5);--shadow-lg:0 18px 64px rgba(0,0,0,.72);--scrim:rgba(0,0,0,.55)}
+  @keyframes jkk-spin{to{transform:rotate(360deg)}}
+  @keyframes jkk-pop{from{opacity:0;transform:scale(.97) translateY(6px)}to{opacity:1;transform:none}}
+  @keyframes jkk-sheet{from{transform:translateY(100%)}to{transform:none}}
+  @keyframes jkk-slide{from{transform:translateX(-100%)}to{transform:none}}
+  @keyframes jkk-fade{from{opacity:0}to{opacity:1}}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--fill-2);border-radius:6px;border:2px solid transparent;background-clip:padding-box}
+  @media print{.jkk-noprint{display:none!important}body{background:#fff}}
+</style>
+</helmet>
+<div data-theme="{{ theme }}" style="background:var(--bg);color:var(--text);min-height:100dvh;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;">
+
+  <sc-if value="{{ notLoaded }}" hint-placeholder-val="{{ true }}">
+    <div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:var(--bg);">
+      <div style="width:34px;height:34px;border-radius:50%;border:3px solid var(--fill-2);border-top-color:var(--accent);animation:jkk-spin .8s linear infinite;"></div>
+    </div>
+  </sc-if>
+
+  <!-- ============ SHARE / LAPORAN (read-only) ============ -->
+  <sc-if value="{{ shareView }}" hint-placeholder-val="{{ false }}">
+    <div style="min-height:100dvh;background:var(--bg);animation:jkk-fade .3s ease;">
+      <div class="jkk-noprint" style="position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:12px;padding:12px clamp(14px,4vw,28px);background:var(--surface);border-bottom:1px solid var(--sep);backdrop-filter:saturate(180%) blur(20px);">
+        <button onClick="{{ h.exitReport }}" style="display:inline-flex;align-items:center;gap:5px;border:none;background:var(--fill);color:var(--text);border-radius:9px;padding:8px 13px;font-size:14px;font-weight:600;cursor:pointer;">‹ Kembali</button>
+        <div style="flex:1;text-align:center;font-size:14px;font-weight:600;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Pratinjau Laporan</div>
+        <button onClick="{{ h.toggleTheme }}" title="Ganti tema" style="border:none;background:var(--fill);color:var(--text);border-radius:9px;width:38px;height:38px;font-size:15px;cursor:pointer;">◐</button>
+        <button onClick="{{ h.printReport }}" style="border:none;background:var(--accent);color:#fff;border-radius:9px;padding:8px 15px;font-size:14px;font-weight:600;cursor:pointer;">Cetak / PDF</button>
+      </div>
+
+      <div style="max-width:940px;margin:0 auto;padding:clamp(22px,4vw,48px) clamp(16px,4vw,40px) 80px;">
+        <header style="border-bottom:2px solid var(--text);padding-bottom:22px;margin-bottom:30px;">
+          <div style="font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-bottom:10px;">Bukti Dukung Laporan Kegiatan</div>
+          <h1 style="margin:0 0 8px;font-size:clamp(26px,4vw,38px);font-weight:760;letter-spacing:-.025em;line-height:1.08;">{{ report.title }}</h1>
+          <div style="display:flex;flex-wrap:wrap;gap:8px 18px;color:var(--text-2);font-size:15px;">
+            <span>Periode: <b style="color:var(--text);">{{ report.rangeLabel }}</b></span>
+            <span>Dibuat {{ report.generated }}</span>
+          </div>
+        </header>
+
+        <sc-if value="{{ report.empty }}" hint-placeholder-val="{{ false }}">
+          <div style="text-align:center;padding:80px 20px;color:var(--text-3);">
+            <div style="font-size:17px;font-weight:600;color:var(--text-2);">Tidak ada kegiatan pada periode ini</div>
+            <div style="font-size:14px;margin-top:6px;">Sesuaikan rentang tanggal pada menu Bagikan.</div>
+          </div>
+        </sc-if>
+
+        <!-- STATISTIK -->
+        <sc-if value="{{ report.showStats }}" hint-placeholder-val="{{ false }}">
+          <section style="margin-bottom:38px;">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:22px;">
+              <div style="background:var(--surface);border:1px solid var(--sep);border-radius:16px;padding:18px 20px;box-shadow:var(--shadow);">
+                <div style="font-size:38px;font-weight:740;letter-spacing:-.03em;line-height:1;">{{ report.total }}</div>
+                <div style="font-size:13px;color:var(--text-2);margin-top:6px;font-weight:500;">Total Kegiatan</div>
+              </div>
+              <div style="background:var(--surface);border:1px solid var(--sep);border-radius:16px;padding:18px 20px;box-shadow:var(--shadow);">
+                <div style="font-size:38px;font-weight:740;letter-spacing:-.03em;line-height:1;">{{ report.catCount }}</div>
+                <div style="font-size:13px;color:var(--text-2);margin-top:6px;font-weight:500;">Rencana Kinerja</div>
+              </div>
+              <div style="background:var(--surface);border:1px solid var(--sep);border-radius:16px;padding:18px 20px;box-shadow:var(--shadow);">
+                <div style="font-size:38px;font-weight:740;letter-spacing:-.03em;line-height:1;">{{ report.rangeDays }}</div>
+                <div style="font-size:13px;color:var(--text-2);margin-top:6px;font-weight:500;">Hari Periode</div>
+              </div>
+            </div>
+            <div style="background:var(--surface);border:1px solid var(--sep);border-radius:16px;padding:18px 20px;box-shadow:var(--shadow);">
+              <div style="font-size:13px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:14px;">Sebaran per Rencana Kinerja</div>
+              <div style="display:flex;flex-direction:column;gap:13px;">
+                <sc-for list="{{ report.catStats }}" as="s" hint-placeholder-count="3">
+                  <div>
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">
+                      <span style="width:11px;height:11px;border-radius:3px;background:{{ s.color }};flex:none;"></span>
+                      <span style="flex:1;font-size:14px;font-weight:560;">{{ s.name }}</span>
+                      <span style="font-size:13px;color:var(--text-2);font-variant-numeric:tabular-nums;">{{ s.count }} · {{ s.pct }}%</span>
+                    </div>
+                    <div style="height:8px;background:var(--fill);border-radius:5px;overflow:hidden;"><div style="height:100%;border-radius:5px;{{ s.barStyle }}"></div></div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </section>
+        </sc-if>
+
+        <!-- TIMELINE (gantt) -->
+        <sc-if value="{{ report.showTimeline }}" hint-placeholder-val="{{ false }}">
+          <section style="margin-bottom:38px;">
+            <h2 style="font-size:19px;font-weight:700;letter-spacing:-.02em;margin:0 0 14px;">Lini Masa Kegiatan</h2>
+            <div style="background:var(--surface);border:1px solid var(--sep);border-radius:16px;padding:16px 18px 22px;box-shadow:var(--shadow);overflow:hidden;">
+              <div style="position:relative;height:22px;margin-left:clamp(0px,0px,0px);margin-bottom:6px;">
+                <sc-for list="{{ report.ticks }}" as="tk" hint-placeholder-count="5">
+                  <span style="position:absolute;top:0;transform:translateX(-50%);font-size:11px;color:var(--text-3);white-space:nowrap;left:{{ tk.left }}%;">{{ tk.label }}</span>
+                </sc-for>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:9px;">
+                <sc-for list="{{ report.gRows }}" as="r" hint-placeholder-count="4">
+                  <div style="display:grid;grid-template-columns:minmax(120px,190px) 1fr;gap:12px;align-items:center;">
+                    <div style="min-width:0;">
+                      <div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ r.title }}</div>
+                      <div style="font-size:11px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ r.dateLabel }}</div>
+                    </div>
+                    <div style="position:relative;height:26px;background:var(--fill);border-radius:7px;">
+                      <div onClick="{{ r.onClick }}" title="{{ r.title }}" style="position:absolute;top:4px;height:18px;border-radius:6px;cursor:pointer;box-shadow:0 1px 2px rgba(0,0,0,.15);{{ r.barStyle }}"></div>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </section>
+        </sc-if>
+
+        <!-- GRID -->
+        <sc-if value="{{ report.showGrid }}" hint-placeholder-val="{{ false }}">
+          <section style="margin-bottom:38px;">
+            <h2 style="font-size:19px;font-weight:700;letter-spacing:-.02em;margin:0 0 14px;">Kartu Kegiatan &amp; Bukti Dukung</h2>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;">
+              <sc-for list="{{ report.items }}" as="it" hint-placeholder-count="4">
+                <article style="background:var(--surface);border:1px solid var(--sep);border-radius:16px;overflow:hidden;box-shadow:var(--shadow);display:flex;flex-direction:column;break-inside:avoid;">
+                  <sc-if value="{{ it.hasCover }}" hint-placeholder-val="{{ false }}">
+                    <button onClick="{{ it.onOpenImages }}" style="height:140px;border:none;background-color:var(--fill);background-size:cover;background-position:center;cursor:zoom-in;position:relative;padding:0;background-image:url('{{ it.cover }}');">
+                      <sc-if value="{{ it.imgCountMore }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;right:8px;bottom:8px;background:rgba(0,0,0,.62);color:#fff;font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;">{{ it.imgCountLabel }}</span></sc-if>
+                    </button>
+                  </sc-if>
+                  <sc-if value="{{ it.noCover }}" hint-placeholder-val="{{ true }}">
+                    <div style="height:80px;background:repeating-linear-gradient(135deg,var(--fill),var(--fill) 9px,transparent 9px,transparent 18px);display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--sep);"><span style="font-family:ui-monospace,SFMono-Regular,monospace;font-size:11px;color:var(--text-3);">{{ it.coverNote }}</span></div>
+                  </sc-if>
+                  <div style="padding:13px 14px;display:flex;flex-direction:column;gap:6px;flex:1;">
+                    <span style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;color:var(--text-2);width:fit-content;"><span style="width:8px;height:8px;border-radius:3px;background:{{ it.catColor }};"></span>{{ it.catName }}</span>
+                    <h3 style="margin:0;font-size:15px;font-weight:640;letter-spacing:-.01em;line-height:1.25;">{{ it.title }}</h3>
+                    <p style="margin:0;color:var(--text-2);font-size:13px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;">{{ it.capaian }}</p>
+                    <div style="margin-top:auto;padding-top:6px;font-size:12px;color:var(--text-3);">{{ it.dateLabel }}</div>
+                    <sc-if value="{{ it.linkCount }}" hint-placeholder-val="{{ 0 }}">
+                      <div style="display:flex;flex-direction:column;gap:4px;">
+                        <sc-for list="{{ it.links }}" as="lk" hint-placeholder-count="1"><a href="{{ lk.url }}" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">↗ {{ lk.name }}</a></sc-for>
+                      </div>
+                    </sc-if>
+                  </div>
+                </article>
+              </sc-for>
+            </div>
+          </section>
+        </sc-if>
+
+        <!-- LAPORAN PER TANGGAL -->
+        <sc-if value="{{ report.showReport }}" hint-placeholder-val="{{ false }}">
+          <section>
+            <h2 style="font-size:19px;font-weight:700;letter-spacing:-.02em;margin:0 0 14px;">Rincian per Tanggal</h2>
+            <div style="display:flex;flex-direction:column;gap:22px;">
+              <sc-for list="{{ report.groups }}" as="g" hint-placeholder-count="3">
+                <div style="break-inside:avoid;">
+                  <div style="font-size:14px;font-weight:700;padding:7px 0;border-bottom:1px solid var(--sep-2);margin-bottom:10px;text-transform:capitalize;">{{ g.label }}</div>
+                  <div style="display:flex;flex-direction:column;gap:12px;">
+                    <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="2">
+                      <div style="display:flex;gap:14px;padding:2px 0;">
+                        <div style="width:4px;flex:none;border-radius:3px;background:{{ it.catColor }};"></div>
+                        <div style="flex:1;min-width:0;">
+                          <div style="display:flex;flex-wrap:wrap;gap:6px 10px;align-items:baseline;margin-bottom:3px;">
+                            <span style="font-size:11.5px;font-weight:600;color:var(--text-2);">{{ it.catName }}</span>
+                            <sc-if value="{{ it.rangeBadge }}" hint-placeholder-val="{{ false }}"><span style="font-size:11.5px;color:var(--accent);font-weight:600;">{{ it.rangeBadge }}</span></sc-if>
+                            <sc-if value="{{ it.timeLabel }}" hint-placeholder-val="{{ false }}"><span style="font-size:11.5px;color:var(--text-3);">{{ it.timeLabel }}</span></sc-if>
+                          </div>
+                          <div style="font-size:15px;font-weight:640;letter-spacing:-.01em;">{{ it.title }}</div>
+                          <div style="font-size:14px;color:var(--text-2);line-height:1.5;margin-top:3px;">{{ it.capaian }}</div>
+                          <sc-if value="{{ it.evCount }}" hint-placeholder-val="{{ 0 }}">
+                            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:9px;align-items:center;">
+                              <sc-for list="{{ it.thumbs }}" as="th" hint-placeholder-count="1"><button onClick="{{ th.onClick }}" style="width:52px;height:52px;border-radius:8px;border:1px solid var(--sep);background-size:cover;background-position:center;cursor:zoom-in;padding:0;background-image:url('{{ th.url }}');"></button></sc-for>
+                              <sc-for list="{{ it.links }}" as="lk" hint-placeholder-count="1"><a href="{{ lk.url }}" target="_blank" rel="noopener" style="font-size:12.5px;color:var(--accent);text-decoration:none;background:var(--fill);padding:5px 11px;border-radius:8px;">↗ {{ lk.name }}</a></sc-for>
+                            </div>
+                          </sc-if>
+                        </div>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </section>
+        </sc-if>
+
+        <footer style="margin-top:44px;padding-top:18px;border-top:1px solid var(--sep);font-size:12px;color:var(--text-3);text-align:center;">Dihasilkan oleh Jurnal Kegiatan — {{ report.generated }}</footer>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ============ APLIKASI ============ -->
+  <sc-if value="{{ appMode }}" hint-placeholder-val="{{ false }}">
+    <div style="display:flex;min-height:100dvh;">
+
+      <!-- SIDEBAR desktop -->
+      <sc-if value="{{ showSidebar }}" hint-placeholder-val="{{ true }}">
+        <aside style="width:266px;flex:none;border-right:1px solid var(--sep);background:var(--surface);display:flex;flex-direction:column;height:100dvh;position:sticky;top:0;">
+          <div style="padding:20px 18px 8px;display:flex;align-items:center;gap:10px;">
+            <div style="width:30px;height:30px;border-radius:8px;background:var(--accent);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:760;font-size:16px;">J</div>
+            <div><div style="font-weight:720;font-size:16px;letter-spacing:-.02em;line-height:1.1;">Jurnal Kegiatan</div><div style="font-size:11.5px;color:var(--text-3);">Bukti Dukung SKP</div></div>
+          </div>
+          <div style="padding:8px 10px;overflow:auto;flex:1;">
+            <sc-for list="{{ allNav }}" as="an" hint-placeholder-count="1"><button onClick="{{ an.onClick }}" style="{{ an.itemStyle }}"><span style="width:11px;height:11px;border-radius:50%;background:linear-gradient(135deg,var(--accent),#5E5CE6);flex:none;"></span><span style="flex:1;text-align:left;">Semua Kegiatan</span><span style="color:var(--text-3);font-size:13px;font-variant-numeric:tabular-nums;">{{ an.count }}</span></button></sc-for>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 8px 6px;"><span style="font-size:11.5px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;">Rencana Kinerja</span><button onClick="{{ h.openCatMgr }}" title="Kelola" style="border:none;background:transparent;color:var(--accent);font-size:19px;line-height:1;cursor:pointer;padding:0 4px;">＋</button></div>
+            <sc-for list="{{ cats }}" as="c" hint-placeholder-count="4">
+              <button onClick="{{ c.onClick }}" style="{{ c.itemStyle }}"><span style="width:11px;height:11px;border-radius:3px;flex:none;background:{{ c.color }};"></span><span style="flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ c.name }}</span><span style="color:var(--text-3);font-size:13px;font-variant-numeric:tabular-nums;">{{ c.count }}</span></button>
+            </sc-for>
+          </div>
+          <div style="padding:10px;border-top:1px solid var(--sep);display:flex;flex-direction:column;gap:1px;">
+            <button onClick="{{ h.openCatMgr }}" style="text-align:left;border:none;background:transparent;color:var(--text-2);font-size:13.5px;padding:9px 10px;border-radius:9px;cursor:pointer;">Kelola Rencana Kinerja</button>
+            <button onClick="{{ h.exportCsv }}" style="text-align:left;border:none;background:transparent;color:var(--text-2);font-size:13.5px;padding:9px 10px;border-radius:9px;cursor:pointer;">Export Spreadsheet (CSV)</button>
+            <button onClick="{{ h.exportJson }}" style="text-align:left;border:none;background:transparent;color:var(--text-2);font-size:13.5px;padding:9px 10px;border-radius:9px;cursor:pointer;">Export Data (JSON)</button>
+            <label style="text-align:left;color:var(--text-2);font-size:13.5px;padding:9px 10px;border-radius:9px;cursor:pointer;">Import Data (JSON)<input type="file" accept="application/json,.json" onChange="{{ h.importJson }}" style="display:none;"></label>
+            <button onClick="{{ h.toggleTheme }}" style="text-align:left;border:none;background:transparent;color:var(--text-2);font-size:13.5px;padding:9px 10px;border-radius:9px;cursor:pointer;">{{ themeLabel }}</button>
+          </div>
+        </aside>
+      </sc-if>
+
+      <!-- MAIN -->
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column;">
+        <!-- mobile top bar -->
+        <sc-if value="{{ isMobile }}" hint-placeholder-val="{{ false }}">
+          <div style="position:sticky;top:0;z-index:25;display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--surface);border-bottom:1px solid var(--sep);backdrop-filter:saturate(180%) blur(20px);">
+            <button onClick="{{ h.openSidebar }}" style="border:none;background:var(--fill);color:var(--text);width:38px;height:38px;border-radius:10px;cursor:pointer;display:flex;flex-direction:column;gap:3.5px;align-items:center;justify-content:center;"><span style="width:15px;height:1.8px;background:currentColor;border-radius:2px;"></span><span style="width:15px;height:1.8px;background:currentColor;border-radius:2px;"></span><span style="width:15px;height:1.8px;background:currentColor;border-radius:2px;"></span></button>
+            <div style="flex:1;font-weight:720;font-size:17px;letter-spacing:-.02em;">Jurnal Kegiatan</div>
+            <button onClick="{{ h.openShare }}" style="border:none;background:var(--fill);color:var(--text);height:38px;padding:0 13px;border-radius:10px;font-size:13.5px;font-weight:600;cursor:pointer;">Bagikan</button>
+            <button onClick="{{ h.toggleTheme }}" style="border:none;background:var(--fill);color:var(--text);width:38px;height:38px;border-radius:10px;font-size:15px;cursor:pointer;">◐</button>
+          </div>
+        </sc-if>
+
+        <!-- toolbar -->
+        <header class="jkk-noprint" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px clamp(14px,3vw,26px);background:var(--surface);border-bottom:1px solid var(--sep);position:sticky;top:0;z-index:15;backdrop-filter:saturate(180%) blur(20px);">
+          <div style="display:flex;background:var(--fill);border-radius:10px;padding:2px;flex:none;">
+            <sc-for list="{{ segItems }}" as="sg" hint-placeholder-count="3"><button onClick="{{ sg.onClick }}" style="{{ sg.style }}">{{ sg.label }}</button></sc-for>
+          </div>
+          <div style="position:relative;flex:1;min-width:150px;max-width:360px;">
+            <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-3);font-size:15px;pointer-events:none;">⌕</span>
+            <input value="{{ search }}" onInput="{{ h.setSearch }}" placeholder="Cari kegiatan…" style="width:100%;padding:9px 12px 9px 34px;border-radius:10px;border:1px solid var(--sep-2);background:var(--bg);color:var(--text);font-size:14px;outline:none;">
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;margin-left:auto;flex:none;">
+            <sc-if value="{{ showSidebar }}" hint-placeholder-val="{{ true }}">
+              <select value="{{ sort }}" onChange="{{ h.setSort }}" style="border:1px solid var(--sep-2);background:var(--bg);color:var(--text);border-radius:10px;padding:9px 10px;font-size:13.5px;cursor:pointer;outline:none;"><option value="date-desc">Terbaru</option><option value="date-asc">Terlama</option><option value="title">Judul A–Z</option></select>
+              <button onClick="{{ h.openShare }}" style="border:none;background:var(--fill);color:var(--text);border-radius:10px;padding:9px 15px;font-size:14px;font-weight:600;cursor:pointer;">Bagikan</button>
+            </sc-if>
+            <button onClick="{{ h.openNew }}" style="border:none;background:var(--accent);color:#fff;border-radius:10px;padding:9px 16px;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap;">＋ Kegiatan</button>
+          </div>
+        </header>
+
+        <main style="padding:clamp(14px,2.5vw,26px);flex:1;">
+
+          <!-- LIST -->
+          <sc-if value="{{ isList }}" hint-placeholder-val="{{ true }}">
+            <sc-if value="{{ hasResults }}" hint-placeholder-val="{{ true }}">
+              <div style="max-width:880px;margin:0 auto;display:flex;flex-direction:column;gap:26px;">
+                <sc-for list="{{ listGroups }}" as="g" hint-placeholder-count="3">
+                  <section>
+                    <div style="display:flex;align-items:baseline;gap:9px;padding:2px 2px 12px;"><h2 style="font-size:15px;font-weight:700;margin:0;text-transform:capitalize;letter-spacing:-.01em;">{{ g.label }}</h2><span style="color:var(--text-3);font-size:13px;">{{ g.countLabel }}</span></div>
+                    <div style="display:flex;flex-direction:column;gap:11px;">
+                      <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="2">
+                        <article onClick="{{ it.onEdit }}" style="background:var(--surface);border:1px solid var(--sep);border-radius:15px;padding:15px 17px;box-shadow:var(--shadow);cursor:pointer;display:flex;gap:15px;transition:transform .12s ease;" style-hover="transform:translateY(-1px);border-color:var(--sep-2);">
+                          <div style="flex:1;min-width:0;">
+                            <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;flex-wrap:wrap;">
+                              <span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--text-2);background:var(--fill);padding:3px 10px;border-radius:20px;"><span style="width:8px;height:8px;border-radius:3px;background:{{ it.catColor }};"></span>{{ it.catName }}</span>
+                              <sc-if value="{{ it.rangeBadge }}" hint-placeholder-val="{{ false }}"><span style="font-size:12px;font-weight:600;color:var(--accent);background:var(--accent-soft);padding:3px 10px;border-radius:20px;">{{ it.rangeBadge }}</span></sc-if>
+                              <sc-if value="{{ it.timeLabel }}" hint-placeholder-val="{{ false }}"><span style="font-size:12.5px;color:var(--text-3);">{{ it.timeLabel }}</span></sc-if>
+                            </div>
+                            <h3 style="margin:0 0 4px;font-size:16.5px;font-weight:660;letter-spacing:-.015em;line-height:1.25;">{{ it.title }}</h3>
+                            <p style="margin:0;color:var(--text-2);font-size:14px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">{{ it.capaian }}</p>
+                            <sc-if value="{{ it.evCount }}" hint-placeholder-val="{{ 0 }}">
+                              <div style="display:flex;gap:8px;margin-top:11px;flex-wrap:wrap;align-items:center;">
+                                <sc-for list="{{ it.thumbs }}" as="th" hint-placeholder-count="2"><button onClick="{{ th.onClick }}" style="width:44px;height:44px;border-radius:9px;border:1px solid var(--sep);background-size:cover;background-position:center;cursor:zoom-in;padding:0;background-image:url('{{ th.url }}');"></button></sc-for>
+                                <sc-for list="{{ it.links }}" as="lk" hint-placeholder-count="1"><a href="{{ lk.url }}" target="_blank" rel="noopener" onClick="{{ h.stop }}" style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--accent);text-decoration:none;background:var(--fill);padding:6px 11px;border-radius:9px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">↗ {{ lk.name }}</a></sc-for>
+                              </div>
+                            </sc-if>
+                          </div>
+                          <sc-if value="{{ it.hasCover }}" hint-placeholder-val="{{ false }}"><button onClick="{{ it.onOpenImages }}" style="width:88px;height:88px;flex:none;border-radius:12px;border:1px solid var(--sep);background-size:cover;background-position:center;cursor:zoom-in;padding:0;background-image:url('{{ it.cover }}');"></button></sc-if>
+                        </article>
+                      </sc-for>
+                    </div>
+                  </section>
+                </sc-for>
+              </div>
+            </sc-if>
+            <sc-if value="{{ noResults }}" hint-placeholder-val="{{ false }}">
+              <div style="max-width:420px;margin:70px auto;text-align:center;color:var(--text-3);"><div style="font-size:44px;margin-bottom:6px;opacity:.5;">◔</div><div style="font-size:17px;font-weight:640;color:var(--text-2);">Belum ada kegiatan</div><div style="font-size:14px;margin:6px 0 18px;">Mulai catat kegiatan kerja sebagai bukti dukung laporan.</div><button onClick="{{ h.openNew }}" style="border:none;background:var(--accent);color:#fff;border-radius:11px;padding:11px 20px;font-size:15px;font-weight:600;cursor:pointer;">＋ Tambah Kegiatan</button></div>
+            </sc-if>
+          </sc-if>
+
+          <!-- GRID -->
+          <sc-if value="{{ isGrid }}" hint-placeholder-val="{{ false }}">
+            <sc-if value="{{ hasResults }}" hint-placeholder-val="{{ true }}">
+              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(258px,1fr));gap:16px;">
+                <sc-for list="{{ gridItems }}" as="it" hint-placeholder-count="6">
+                  <article onClick="{{ it.onEdit }}" style="background:var(--surface);border:1px solid var(--sep);border-radius:16px;overflow:hidden;box-shadow:var(--shadow);cursor:pointer;display:flex;flex-direction:column;transition:transform .12s ease;" style-hover="transform:translateY(-2px);">
+                    <sc-if value="{{ it.hasCover }}" hint-placeholder-val="{{ false }}"><button onClick="{{ it.onOpenImages }}" style="height:152px;border:none;background-color:var(--fill);background-size:cover;background-position:center;cursor:zoom-in;position:relative;padding:0;background-image:url('{{ it.cover }}');"><sc-if value="{{ it.imgCountMore }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;right:8px;bottom:8px;background:rgba(0,0,0,.62);color:#fff;font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;">{{ it.imgCountLabel }}</span></sc-if></button></sc-if>
+                    <sc-if value="{{ it.noCover }}" hint-placeholder-val="{{ true }}"><div style="height:92px;background:repeating-linear-gradient(135deg,var(--fill),var(--fill) 9px,transparent 9px,transparent 18px);display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--sep);"><span style="font-family:ui-monospace,SFMono-Regular,monospace;font-size:11px;color:var(--text-3);">{{ it.coverNote }}</span></div></sc-if>
+                    <div style="padding:14px 15px;display:flex;flex-direction:column;gap:7px;flex:1;">
+                      <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;"><span style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;color:var(--text-2);"><span style="width:8px;height:8px;border-radius:3px;background:{{ it.catColor }};"></span>{{ it.catName }}</span><sc-if value="{{ it.rangeBadge }}" hint-placeholder-val="{{ false }}"><span style="font-size:11px;font-weight:600;color:var(--accent);background:var(--accent-soft);padding:2px 8px;border-radius:16px;">{{ it.rangeBadge }}</span></sc-if></div>
+                      <h3 style="margin:0;font-size:16px;font-weight:640;letter-spacing:-.01em;line-height:1.25;">{{ it.title }}</h3>
+                      <p style="margin:0;color:var(--text-2);font-size:13.5px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;">{{ it.capaian }}</p>
+                      <div style="margin-top:auto;padding-top:5px;display:flex;align-items:center;gap:7px;color:var(--text-3);font-size:12px;">{{ it.dateLabel }}<sc-if value="{{ it.timeLabel }}" hint-placeholder-val="{{ false }}"><span>· {{ it.timeLabel }}</span></sc-if></div>
+                    </div>
+                  </article>
+                </sc-for>
+              </div>
+            </sc-if>
+            <sc-if value="{{ noResults }}" hint-placeholder-val="{{ false }}"><div style="max-width:420px;margin:70px auto;text-align:center;color:var(--text-3);"><div style="font-size:17px;font-weight:640;color:var(--text-2);">Belum ada kegiatan</div><button onClick="{{ h.openNew }}" style="border:none;background:var(--accent);color:#fff;border-radius:11px;padding:11px 20px;font-size:15px;font-weight:600;cursor:pointer;margin-top:16px;">＋ Tambah Kegiatan</button></div></sc-if>
+          </sc-if>
+
+          <!-- CALENDAR -->
+          <sc-if value="{{ isCal }}" hint-placeholder-val="{{ false }}">
+            <div style="max-width:1060px;margin:0 auto;">
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+                <h2 style="font-size:22px;font-weight:720;margin:0;letter-spacing:-.025em;text-transform:capitalize;">{{ cal.label }}</h2>
+                <div style="flex:1;"></div>
+                <button onClick="{{ h.calToday }}" style="border:1px solid var(--sep-2);background:var(--surface);color:var(--text);border-radius:9px;padding:7px 13px;font-size:13.5px;font-weight:600;cursor:pointer;">Hari Ini</button>
+                <button onClick="{{ h.calPrev }}" style="border:1px solid var(--sep-2);background:var(--surface);color:var(--text);border-radius:9px;width:36px;height:34px;font-size:18px;cursor:pointer;line-height:1;">‹</button>
+                <button onClick="{{ h.calNext }}" style="border:1px solid var(--sep-2);background:var(--surface);color:var(--text);border-radius:9px;width:36px;height:34px;font-size:18px;cursor:pointer;line-height:1;">›</button>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(7,1fr);background:var(--surface);border:1px solid var(--sep);border-bottom:none;border-radius:14px 14px 0 0;overflow:hidden;">
+                <sc-for list="{{ cal.weekdays }}" as="wd" hint-placeholder-count="7"><div style="padding:9px 8px;font-size:12px;font-weight:680;color:var(--text-3);border-bottom:1px solid var(--sep);">{{ wd }}</div></sc-for>
+              </div>
+              <div style="border:1px solid var(--sep);border-top:none;border-radius:0 0 14px 14px;overflow:hidden;background:var(--surface);">
+                <sc-for list="{{ cal.weeks }}" as="wk" hint-placeholder-count="5">
+                  <div style="position:relative;">
+                    <div style="display:grid;grid-template-columns:repeat(7,1fr);min-height:{{ wk.minH }};">
+                      <sc-for list="{{ wk.days }}" as="d" hint-placeholder-count="7"><button onClick="{{ d.onClick }}" style="{{ d.cellStyle }}"><span style="{{ d.numStyle }}">{{ d.num }}</span></button></sc-for>
+                    </div>
+                    <div style="position:absolute;left:0;right:0;top:30px;bottom:4px;pointer-events:none;"><div style="position:relative;height:100%;margin:0 3px;">
+                      <sc-for list="{{ wk.bars }}" as="bar" hint-placeholder-count="2"><div onClick="{{ bar.onClick }}" title="{{ bar.title }}" style="{{ bar.css }}"><sc-if value="{{ bar.showLabel }}" hint-placeholder-val="{{ true }}">{{ bar.title }}</sc-if></div></sc-for>
+                      <sc-for list="{{ wk.overflowCells }}" as="ov" hint-placeholder-count="0"><div style="{{ ov.style }}"><span style="font-size:10.5px;color:var(--text-3);font-weight:600;padding-left:6px;">+{{ ov.n }}</span></div></sc-for>
+                    </div></div>
+                  </div>
+                </sc-for>
+              </div>
+              <p style="margin:13px 2px;color:var(--text-3);font-size:12.5px;">Klik tanggal untuk menambah kegiatan · klik bar untuk membuka.</p>
+            </div>
+          </sc-if>
+        </main>
+      </div>
+    </div>
+
+    <!-- mobile sidebar sheet -->
+    <sc-if value="{{ mobileSheet }}" hint-placeholder-val="{{ false }}">
+      <div onClick="{{ h.closeSidebar }}" style="position:fixed;inset:0;z-index:40;background:var(--scrim);animation:jkk-fade .2s ease;">
+        <aside onClick="{{ h.stop }}" style="position:absolute;left:0;top:0;bottom:0;width:82%;max-width:300px;background:var(--surface);display:flex;flex-direction:column;animation:jkk-slide .28s cubic-bezier(.32,.72,0,1);box-shadow:var(--shadow-lg);">
+          <div style="padding:20px 18px 8px;display:flex;align-items:center;gap:10px;"><div style="width:30px;height:30px;border-radius:8px;background:var(--accent);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:760;font-size:16px;">J</div><div style="font-weight:720;font-size:16px;letter-spacing:-.02em;flex:1;">Jurnal Kegiatan</div><button onClick="{{ h.closeSidebar }}" style="border:none;background:var(--fill);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:15px;cursor:pointer;">✕</button></div>
+          <div style="padding:8px 10px;overflow:auto;flex:1;">
+            <sc-for list="{{ allNav }}" as="an" hint-placeholder-count="1"><button onClick="{{ an.onClick }}" style="{{ an.itemStyle }}"><span style="width:11px;height:11px;border-radius:50%;background:linear-gradient(135deg,var(--accent),#5E5CE6);flex:none;"></span><span style="flex:1;text-align:left;">Semua Kegiatan</span><span style="color:var(--text-3);font-size:13px;">{{ an.count }}</span></button></sc-for>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 8px 6px;"><span style="font-size:11.5px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;">Rencana Kinerja</span></div>
+            <sc-for list="{{ cats }}" as="c" hint-placeholder-count="4"><button onClick="{{ c.onClick }}" style="{{ c.itemStyle }}"><span style="width:11px;height:11px;border-radius:3px;flex:none;background:{{ c.color }};"></span><span style="flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ c.name }}</span><span style="color:var(--text-3);font-size:13px;">{{ c.count }}</span></button></sc-for>
+          </div>
+          <div style="padding:10px;border-top:1px solid var(--sep);display:flex;flex-direction:column;gap:1px;">
+            <button onClick="{{ h.openCatMgr }}" style="text-align:left;border:none;background:transparent;color:var(--text-2);font-size:14px;padding:11px 10px;border-radius:9px;cursor:pointer;">Kelola Rencana Kinerja</button>
+            <button onClick="{{ h.exportCsv }}" style="text-align:left;border:none;background:transparent;color:var(--text-2);font-size:14px;padding:11px 10px;border-radius:9px;cursor:pointer;">Export Spreadsheet (CSV)</button>
+            <button onClick="{{ h.exportJson }}" style="text-align:left;border:none;background:transparent;color:var(--text-2);font-size:14px;padding:11px 10px;border-radius:9px;cursor:pointer;">Export Data (JSON)</button>
+            <label style="text-align:left;color:var(--text-2);font-size:14px;padding:11px 10px;border-radius:9px;cursor:pointer;">Import Data (JSON)<input type="file" accept="application/json,.json" onChange="{{ h.importJson }}" style="display:none;"></label>
+          </div>
+        </aside>
+      </div>
+    </sc-if>
+  </sc-if>
+
+  <!-- ============ DETAIL HARIAN ============ -->
+  <sc-if value="{{ dayViewOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;inset:0;z-index:45;background:var(--bg);overflow:auto;animation:jkk-fade .25s ease;">
+      <div style="position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;padding:12px clamp(14px,4vw,26px);background:var(--surface);border-bottom:1px solid var(--sep);backdrop-filter:saturate(180%) blur(20px);">
+        <button onClick="{{ h.closeDay }}" style="display:inline-flex;align-items:center;gap:5px;border:none;background:var(--fill);color:var(--text);border-radius:9px;padding:8px 13px;font-size:14px;font-weight:600;cursor:pointer;">‹ Kalender</button>
+        <div style="flex:1;min-width:0;"><div style="font-size:16px;font-weight:720;letter-spacing:-.02em;text-transform:capitalize;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ day.label }}</div><div style="font-size:12.5px;color:var(--text-3);">{{ day.countLabel }}</div></div>
+        <button onClick="{{ day.onAdd }}" style="border:none;background:var(--accent);color:#fff;border-radius:10px;padding:9px 15px;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap;">＋ Tambah</button>
+      </div>
+      <div style="max-width:820px;margin:0 auto;padding:clamp(16px,3vw,26px);">
+        <sc-if value="{{ day.empty }}" hint-placeholder-val="{{ true }}">
+          <div style="text-align:center;padding:70px 20px;color:var(--text-3);"><div style="font-size:40px;opacity:.5;margin-bottom:6px;">◔</div><div style="font-size:16px;font-weight:640;color:var(--text-2);">Tidak ada kegiatan pada tanggal ini</div><button onClick="{{ day.onAdd }}" style="border:none;background:var(--accent);color:#fff;border-radius:11px;padding:11px 20px;font-size:15px;font-weight:600;cursor:pointer;margin-top:16px;">＋ Tambah Kegiatan</button></div>
+        </sc-if>
+        <div style="display:flex;flex-direction:column;gap:11px;">
+          <sc-for list="{{ day.items }}" as="it" hint-placeholder-count="2">
+            <article onClick="{{ it.onEdit }}" style="background:var(--surface);border:1px solid var(--sep);border-radius:15px;padding:15px 17px;box-shadow:var(--shadow);cursor:pointer;display:flex;gap:15px;" style-hover="border-color:var(--sep-2);">
+              <div style="flex:1;min-width:0;">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;flex-wrap:wrap;">
+                  <span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--text-2);background:var(--fill);padding:3px 10px;border-radius:20px;"><span style="width:8px;height:8px;border-radius:3px;background:{{ it.catColor }};"></span>{{ it.catName }}</span>
+                  <sc-if value="{{ it.rangeBadge }}" hint-placeholder-val="{{ false }}"><span style="font-size:12px;font-weight:600;color:var(--accent);background:var(--accent-soft);padding:3px 10px;border-radius:20px;">{{ it.rangeBadge }}</span></sc-if>
+                  <sc-if value="{{ it.timeLabel }}" hint-placeholder-val="{{ false }}"><span style="font-size:12.5px;color:var(--text-3);">{{ it.timeLabel }}</span></sc-if>
+                </div>
+                <h3 style="margin:0 0 4px;font-size:16.5px;font-weight:660;letter-spacing:-.015em;line-height:1.25;">{{ it.title }}</h3>
+                <p style="margin:0;color:var(--text-2);font-size:14px;line-height:1.5;">{{ it.capaian }}</p>
+                <sc-if value="{{ it.evCount }}" hint-placeholder-val="{{ 0 }}">
+                  <div style="display:flex;gap:8px;margin-top:11px;flex-wrap:wrap;align-items:center;">
+                    <sc-for list="{{ it.thumbs }}" as="th" hint-placeholder-count="2"><button onClick="{{ th.onClick }}" style="width:44px;height:44px;border-radius:9px;border:1px solid var(--sep);background-size:cover;background-position:center;cursor:zoom-in;padding:0;background-image:url('{{ th.url }}');"></button></sc-for>
+                    <sc-for list="{{ it.links }}" as="lk" hint-placeholder-count="1"><a href="{{ lk.url }}" target="_blank" rel="noopener" onClick="{{ h.stop }}" style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--accent);text-decoration:none;background:var(--fill);padding:6px 11px;border-radius:9px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">↗ {{ lk.name }}</a></sc-for>
+                  </div>
+                </sc-if>
+              </div>
+              <sc-if value="{{ it.hasCover }}" hint-placeholder-val="{{ false }}"><button onClick="{{ it.onOpenImages }}" style="width:88px;height:88px;flex:none;border-radius:12px;border:1px solid var(--sep);background-size:cover;background-position:center;cursor:zoom-in;padding:0;background-image:url('{{ it.cover }}');"></button></sc-if>
+            </article>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ============ EDITOR MODAL ============ -->
+  <sc-if value="{{ editorOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ h.closeEditor }}" style="position:fixed;inset:0;z-index:60;display:flex;justify-content:center;background:var(--scrim);backdrop-filter:blur(2px);animation:jkk-fade .2s ease;align-items:{{ overlayAlign }};padding:{{ overlayPad }};">
+      <div onClick="{{ h.stop }}" onPaste="{{ h.fPasteImages }}" style="{{ modalCardStyle }}">
+        <header style="display:flex;align-items:center;gap:12px;padding:17px 20px;border-bottom:1px solid var(--sep);flex:none;"><h2 style="margin:0;font-size:18px;font-weight:700;letter-spacing:-.02em;flex:1;">{{ editorTitle }}</h2><button onClick="{{ h.closeEditor }}" style="border:none;background:var(--fill);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:15px;cursor:pointer;">✕</button></header>
+        <div style="padding:20px;overflow:auto;flex:1;">
+          <div style="margin-bottom:17px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 8px;"><label style="font-size:13px;font-weight:640;color:var(--text-2);">Rencana Kinerja</label><button onClick="{{ h.openCatMgr }}" style="border:none;background:transparent;color:var(--accent);font-size:12.5px;font-weight:600;cursor:pointer;padding:0;">Kelola</button></div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;max-height:150px;overflow:auto;padding:1px;">
+              <sc-for list="{{ form.catChips }}" as="ch" hint-placeholder-count="4"><button onClick="{{ ch.onClick }}" style="{{ ch.style }}"><span style="{{ ch.dotStyle }}"></span>{{ ch.name }}</button></sc-for>
+            </div>
+          </div>
+
+          <div style="margin-bottom:17px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px;"><label style="font-size:13px;font-weight:640;color:var(--text-2);">Tanggal</label><button onClick="{{ h.fToggleRange }}" style="display:flex;align-items:center;gap:8px;border:none;background:transparent;color:var(--text-2);font-size:13px;cursor:pointer;padding:0;">Rentang tanggal<sc-for list="{{ form.rangeSw }}" as="sw" hint-placeholder-count="1"><span style="{{ sw.track }}"><span style="{{ sw.knob }}"></span></span></sc-for></button></div>
+            <div style="display:flex;gap:10px;align-items:center;">
+              <input type="date" value="{{ form.startDate }}" onChange="{{ h.fSetStart }}" style="flex:1;padding:11px 13px;border-radius:11px;border:1px solid var(--sep-2);background:var(--bg);color:var(--text);font-size:15px;outline:none;">
+              <sc-if value="{{ form.isRange }}" hint-placeholder-val="{{ false }}"><span style="color:var(--text-3);">→</span><input type="date" value="{{ form.endDate }}" onChange="{{ h.fSetEnd }}" style="flex:1;padding:11px 13px;border-radius:11px;border:1px solid var(--sep-2);background:var(--bg);color:var(--text);font-size:15px;outline:none;"></sc-if>
+            </div>
+          </div>
+
+          <div style="margin-bottom:17px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px;"><label style="font-size:13px;font-weight:640;color:var(--text-2);">Jam <span style="color:var(--text-3);font-weight:400;">(opsional)</span></label><button onClick="{{ h.fToggleTime }}" style="display:flex;align-items:center;gap:8px;border:none;background:transparent;color:var(--text-2);font-size:13px;cursor:pointer;padding:0;">Tambah jam<sc-for list="{{ form.timeSw }}" as="sw" hint-placeholder-count="1"><span style="{{ sw.track }}"><span style="{{ sw.knob }}"></span></span></sc-for></button></div>
+            <sc-if value="{{ form.hasTime }}" hint-placeholder-val="{{ false }}"><div style="display:flex;gap:10px;align-items:center;"><input type="time" value="{{ form.startTime }}" onChange="{{ h.fSetStartTime }}" style="flex:1;padding:11px 13px;border-radius:11px;border:1px solid var(--sep-2);background:var(--bg);color:var(--text);font-size:15px;outline:none;"><span style="color:var(--text-3);">→</span><input type="time" value="{{ form.endTime }}" onChange="{{ h.fSetEndTime }}" style="flex:1;padding:11px 13px;border-radius:11px;border:1px solid var(--sep-2);background:var(--bg);color:var(--text);font-size:15px;outline:none;"></div></sc-if>
+          </div>
+
+          <div style="margin-bottom:17px;"><label style="display:block;font-size:13px;font-weight:640;color:var(--text-2);margin:0 0 7px;">Kegiatan</label><input value="{{ form.title }}" onInput="{{ h.fSetTitle }}" placeholder="Nama kegiatan" style="width:100%;padding:11px 13px;border-radius:11px;border:1px solid var(--sep-2);background:var(--bg);color:var(--text);font-size:15px;outline:none;"></div>
+
+          <div style="margin-bottom:17px;"><label style="display:block;font-size:13px;font-weight:640;color:var(--text-2);margin:0 0 7px;">Capaian</label><textarea value="{{ form.capaian }}" onInput="{{ h.fSetCapaian }}" rows="4" placeholder="Jelaskan capaian / hasil pekerjaan…" style="width:100%;padding:11px 13px;border-radius:11px;border:1px solid var(--sep-2);background:var(--bg);color:var(--text);font-size:15px;outline:none;line-height:1.5;"></textarea></div>
+
+          <div>
+            <label style="display:block;font-size:13px;font-weight:640;color:var(--text-2);margin:0 0 7px;">Bukti Dukung</label>
+            <div style="display:flex;gap:8px;margin-bottom:10px;"><input value="{{ form.linkDraft }}" onInput="{{ h.fSetLinkDraft }}" placeholder="Tempel link (Drive, dsb.)" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--sep-2);background:var(--bg);color:var(--text);font-size:14px;outline:none;"><button onClick="{{ h.fAddLink }}" style="border:none;background:var(--fill-2);color:var(--text);border-radius:10px;padding:0 15px;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap;">Tambah</button></div>
+            <label style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:14px;border:1.5px dashed var(--sep-2);border-radius:12px;cursor:pointer;color:var(--text-2);font-size:14px;font-weight:500;margin-bottom:10px;text-align:center;"><span>＋ Unggah gambar (bisa lebih dari satu)</span><span style="font-size:11.5px;color:var(--text-3);font-weight:400;">atau tempel gambar dari clipboard (Ctrl / ⌘ + V)</span><input type="file" accept="image/*" multiple onChange="{{ h.fAddImages }}" style="display:none;"></label>
+            <sc-if value="{{ form.hasEvidence }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;flex-direction:column;gap:8px;">
+                <sc-for list="{{ form.evidence }}" as="ev" hint-placeholder-count="1">
+                  <div style="display:flex;align-items:center;gap:11px;padding:8px 10px;border:1px solid var(--sep);border-radius:11px;background:var(--surface-2);">
+                    <sc-if value="{{ ev.isImage }}" hint-placeholder-val="{{ false }}"><span style="width:42px;height:42px;border-radius:8px;flex:none;background-color:var(--fill);background-size:cover;background-position:center;background-image:url('{{ ev.url }}');"></span></sc-if>
+                    <sc-if value="{{ ev.isLink }}" hint-placeholder-val="{{ false }}"><span style="width:42px;height:42px;border-radius:8px;background:var(--accent-soft);color:var(--accent);display:flex;align-items:center;justify-content:center;flex:none;font-size:17px;">↗</span></sc-if>
+                    <span style="flex:1;min-width:0;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2);">{{ ev.label }}</span>
+                    <button onClick="{{ ev.onRemove }}" style="border:none;background:var(--fill);color:var(--text-2);width:28px;height:28px;border-radius:50%;font-size:13px;cursor:pointer;flex:none;">✕</button>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+        <footer style="display:flex;align-items:center;gap:10px;padding:14px 20px;border-top:1px solid var(--sep);flex:none;">
+          <sc-if value="{{ isEditing }}" hint-placeholder-val="{{ false }}"><button onClick="{{ h.deleteCurrent }}" style="border:none;background:transparent;color:#FF3B30;font-size:14px;font-weight:600;cursor:pointer;padding:9px 4px;">Hapus</button></sc-if>
+          <div style="flex:1;"></div>
+          <button onClick="{{ h.closeEditor }}" style="border:none;background:var(--fill);color:var(--text);border-radius:10px;padding:10px 18px;font-size:15px;font-weight:600;cursor:pointer;">Batal</button>
+          <button onClick="{{ h.saveForm }}" style="border:none;background:var(--accent);color:#fff;border-radius:10px;padding:10px 20px;font-size:15px;font-weight:600;cursor:pointer;">Simpan</button>
+        </footer>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ============ KELOLA RENCANA KINERJA ============ -->
+  <sc-if value="{{ catMgrOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ h.closeCatMgr }}" style="position:fixed;inset:0;z-index:70;display:flex;justify-content:center;background:var(--scrim);backdrop-filter:blur(2px);animation:jkk-fade .2s ease;align-items:{{ overlayAlign }};padding:{{ overlayPad }};">
+      <div onClick="{{ h.stop }}" style="{{ modalCardStyle }}">
+        <header style="display:flex;align-items:center;gap:12px;padding:17px 20px;border-bottom:1px solid var(--sep);flex:none;"><h2 style="margin:0;font-size:18px;font-weight:700;letter-spacing:-.02em;flex:1;">Rencana Kinerja</h2><button onClick="{{ h.closeCatMgr }}" style="border:none;background:var(--fill);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:15px;cursor:pointer;">✕</button></header>
+        <div style="padding:16px 20px;overflow:auto;flex:1;">
+          <p style="margin:0 0 14px;font-size:13px;color:var(--text-3);">Kelompokkan kegiatan berdasarkan rencana kinerja. Ketuk kotak warna untuk mengganti warna.</p>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px;">
+            <sc-for list="{{ catList }}" as="c" hint-placeholder-count="4">
+              <div style="display:flex;align-items:center;gap:11px;padding:8px 10px;border:1px solid var(--sep);border-radius:12px;background:var(--surface-2);">
+                <button onClick="{{ c.cycleColor }}" title="Ganti warna" style="{{ c.swatchStyle }}"></button>
+                <input value="{{ c.name }}" onInput="{{ c.onRename }}" style="flex:1;min-width:0;border:none;background:transparent;color:var(--text);font-size:14.5px;font-weight:560;outline:none;">
+                <span style="font-size:12px;color:var(--text-3);flex:none;">{{ c.countLabel }}</span>
+                <button onClick="{{ c.onDelete }}" style="border:none;background:var(--fill);color:var(--text-2);width:28px;height:28px;border-radius:50%;font-size:13px;cursor:pointer;flex:none;">✕</button>
+              </div>
+            </sc-for>
+          </div>
+          <div style="border-top:1px solid var(--sep);padding-top:16px;">
+            <label style="display:block;font-size:13px;font-weight:640;color:var(--text-2);margin:0 0 9px;">Tambah rencana kinerja baru</label>
+            <div style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:11px;"><sc-for list="{{ palette }}" as="p" hint-placeholder-count="10"><button onClick="{{ p.onPick }}" style="{{ p.style }}"></button></sc-for></div>
+            <div style="display:flex;gap:8px;"><input value="{{ catForm.name }}" onInput="{{ h.catSetName }}" placeholder="Nama rencana kinerja" style="flex:1;padding:11px 13px;border-radius:11px;border:1px solid var(--sep-2);background:var(--bg);color:var(--text);font-size:15px;outline:none;"><button onClick="{{ h.catAdd }}" style="border:none;background:var(--accent);color:#fff;border-radius:11px;padding:0 18px;font-size:15px;font-weight:600;cursor:pointer;">Tambah</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ============ SHARE CONFIG ============ -->
+  <sc-if value="{{ shareOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ h.closeShare }}" style="position:fixed;inset:0;z-index:65;display:flex;justify-content:center;background:var(--scrim);backdrop-filter:blur(2px);animation:jkk-fade .2s ease;align-items:{{ overlayAlign }};padding:{{ overlayPad }};">
+      <div onClick="{{ h.stop }}" style="{{ modalCardStyle }}">
+        <header style="display:flex;align-items:center;gap:12px;padding:17px 20px;border-bottom:1px solid var(--sep);flex:none;"><h2 style="margin:0;font-size:18px;font-weight:700;letter-spacing:-.02em;flex:1;">Bagikan Laporan</h2><button onClick="{{ h.closeShare }}" style="border:none;background:var(--fill);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:15px;cursor:pointer;">✕</button></header>
+        <div style="padding:20px;overflow:auto;flex:1;">
+          <p style="margin:0 0 18px;font-size:13.5px;color:var(--text-2);line-height:1.5;">Buat laporan read-only berisi kegiatan pada rentang tanggal tertentu — siap ditampilkan pada aplikasi SKP dan dilihat atasan.</p>
+          <div style="margin-bottom:16px;"><label style="display:block;font-size:13px;font-weight:640;color:var(--text-2);margin:0 0 7px;">Judul Laporan</label><input value="{{ shareCfg.title }}" onInput="{{ h.shSetTitle }}" style="width:100%;padding:11px 13px;border-radius:11px;border:1px solid var(--sep-2);background:var(--bg);color:var(--text);font-size:15px;outline:none;"></div>
+          <div style="margin-bottom:12px;"><label style="display:block;font-size:13px;font-weight:640;color:var(--text-2);margin:0 0 7px;">Rentang Tanggal</label><div style="display:flex;gap:10px;align-items:center;"><input type="date" value="{{ shareCfg.from }}" onChange="{{ h.shSetFrom }}" style="flex:1;padding:11px 13px;border-radius:11px;border:1px solid var(--sep-2);background:var(--bg);color:var(--text);font-size:15px;outline:none;"><span style="color:var(--text-3);">→</span><input type="date" value="{{ shareCfg.to }}" onChange="{{ h.shSetTo }}" style="flex:1;padding:11px 13px;border-radius:11px;border:1px solid var(--sep-2);background:var(--bg);color:var(--text);font-size:15px;outline:none;"></div></div>
+          <div style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:20px;">
+            <button onClick="{{ h.shThisWeek }}" style="border:1px solid var(--sep-2);background:var(--surface);color:var(--text-2);border-radius:20px;padding:6px 13px;font-size:12.5px;font-weight:560;cursor:pointer;">Minggu ini</button>
+            <button onClick="{{ h.shThisMonth }}" style="border:1px solid var(--sep-2);background:var(--surface);color:var(--text-2);border-radius:20px;padding:6px 13px;font-size:12.5px;font-weight:560;cursor:pointer;">Bulan ini</button>
+            <button onClick="{{ h.sh30 }}" style="border:1px solid var(--sep-2);background:var(--surface);color:var(--text-2);border-radius:20px;padding:6px 13px;font-size:12.5px;font-weight:560;cursor:pointer;">30 hari</button>
+            <button onClick="{{ h.shAll }}" style="border:1px solid var(--sep-2);background:var(--surface);color:var(--text-2);border-radius:20px;padding:6px 13px;font-size:12.5px;font-weight:560;cursor:pointer;">Semua</button>
+          </div>
+          <label style="display:block;font-size:13px;font-weight:640;color:var(--text-2);margin:0 0 9px;">Bagian yang Ditampilkan</label>
+          <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:18px;">
+            <button onClick="{{ h.shToggleStats }}" style="display:flex;align-items:center;justify-content:space-between;border:none;background:transparent;color:var(--text);font-size:14.5px;padding:9px 2px;cursor:pointer;">Ringkasan statistik<sc-for list="{{ shareCfg.statsSw }}" as="sw" hint-placeholder-count="1"><span style="{{ sw.track }}"><span style="{{ sw.knob }}"></span></span></sc-for></button>
+            <button onClick="{{ h.shToggleTimeline }}" style="display:flex;align-items:center;justify-content:space-between;border:none;background:transparent;color:var(--text);font-size:14.5px;padding:9px 2px;cursor:pointer;">Lini masa / timeline<sc-for list="{{ shareCfg.timelineSw }}" as="sw" hint-placeholder-count="1"><span style="{{ sw.track }}"><span style="{{ sw.knob }}"></span></span></sc-for></button>
+            <button onClick="{{ h.shToggleGrid }}" style="display:flex;align-items:center;justify-content:space-between;border:none;background:transparent;color:var(--text);font-size:14.5px;padding:9px 2px;cursor:pointer;">Kartu grid + bukti<sc-for list="{{ shareCfg.gridSw }}" as="sw" hint-placeholder-count="1"><span style="{{ sw.track }}"><span style="{{ sw.knob }}"></span></span></sc-for></button>
+            <button onClick="{{ h.shToggleReport }}" style="display:flex;align-items:center;justify-content:space-between;border:none;background:transparent;color:var(--text);font-size:14.5px;padding:9px 2px;cursor:pointer;">Rincian per tanggal<sc-for list="{{ shareCfg.reportSw }}" as="sw" hint-placeholder-count="1"><span style="{{ sw.track }}"><span style="{{ sw.knob }}"></span></span></sc-for></button>
+          </div>
+          <div style="background:var(--surface-2);border:1px solid var(--sep);border-radius:12px;padding:13px 15px;margin-bottom:14px;"><div style="font-size:13px;color:var(--text-2);margin-bottom:8px;"><b style="color:var(--text);">{{ sharePreviewLabel }}</b> akan disertakan.</div><div style="display:flex;gap:8px;"><input value="{{ shareUrl }}" readonly style="flex:1;min-width:0;padding:9px 11px;border-radius:9px;border:1px solid var(--sep-2);background:var(--bg);color:var(--text-2);font-size:12px;outline:none;font-family:ui-monospace,monospace;"><button onClick="{{ h.shCopy }}" style="border:none;background:var(--fill-2);color:var(--text);border-radius:9px;padding:0 15px;font-size:13.5px;font-weight:600;cursor:pointer;white-space:nowrap;">Salin</button></div></div>
+          <p style="margin:0;font-size:11.5px;color:var(--text-3);line-height:1.5;">Catatan: tautan membuka laporan dari data pada perangkat ini. Untuk berbagi antar-perangkat, sinkronkan data ke Spreadsheet dan simpan gambar ke Drive (lihat langkah berikutnya).</p>
+        </div>
+        <footer style="display:flex;align-items:center;gap:10px;padding:14px 20px;border-top:1px solid var(--sep);flex:none;"><div style="flex:1;"></div><button onClick="{{ h.closeShare }}" style="border:none;background:var(--fill);color:var(--text);border-radius:10px;padding:10px 18px;font-size:15px;font-weight:600;cursor:pointer;">Batal</button><button onClick="{{ h.openReport }}" style="border:none;background:var(--accent);color:#fff;border-radius:10px;padding:10px 20px;font-size:15px;font-weight:600;cursor:pointer;">Buka Laporan</button></footer>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ============ LIGHTBOX ============ -->
+  <sc-if value="{{ lightboxOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ h.lbClose }}" style="position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.93);display:flex;flex-direction:column;animation:jkk-fade .2s ease;">
+      <div style="display:flex;align-items:center;gap:12px;padding:16px 20px;color:#fff;flex:none;"><div style="flex:1;font-size:15px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ lightbox.title }}</div><div style="font-size:13px;color:rgba(255,255,255,.6);">{{ lightbox.indexLabel }}</div><button onClick="{{ h.lbClose }}" style="border:none;background:rgba(255,255,255,.15);color:#fff;width:36px;height:36px;border-radius:50%;font-size:16px;cursor:pointer;">✕</button></div>
+      <div style="flex:1;display:flex;align-items:center;justify-content:center;gap:14px;padding:0 12px;min-height:0;">
+        <sc-if value="{{ lightbox.hasMany }}" hint-placeholder-val="{{ false }}"><button onClick="{{ h.lbPrev }}" style="border:none;background:rgba(255,255,255,.15);color:#fff;width:44px;height:44px;border-radius:50%;font-size:22px;cursor:pointer;flex:none;">‹</button></sc-if>
+        <div onClick="{{ h.stop }}" style="width:88vw;max-width:1100px;height:76vh;background-image:url('{{ lightbox.current }}');background-size:contain;background-repeat:no-repeat;background-position:center;border-radius:10px;"></div>
+        <sc-if value="{{ lightbox.hasMany }}" hint-placeholder-val="{{ false }}"><button onClick="{{ h.lbNext }}" style="border:none;background:rgba(255,255,255,.15);color:#fff;width:44px;height:44px;border-radius:50%;font-size:22px;cursor:pointer;flex:none;">›</button></sc-if>
+      </div>
+      <sc-if value="{{ lightbox.hasMany }}" hint-placeholder-val="{{ false }}"><div style="display:flex;gap:8px;padding:16px;justify-content:center;flex-wrap:wrap;flex:none;"><sc-for list="{{ lightbox.thumbs }}" as="t" hint-placeholder-count="3"><button onClick="{{ t.onClick }}" style="{{ t.style }}"></button></sc-for></div></sc-if>
+    </div>
+  </sc-if>
+
+  <!-- ============ TOAST ============ -->
+  <sc-if value="{{ toast }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:100;background:rgba(30,30,32,.94);color:#fff;padding:12px 20px;border-radius:13px;font-size:14px;font-weight:560;box-shadow:0 12px 40px rgba(0,0,0,.35);animation:jkk-pop .25s ease;backdrop-filter:blur(20px);">{{ toast }}</div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:&quot;100%&quot;,&quot;height&quot;:&quot;100%&quot;},&quot;defaultView&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;list&quot;,&quot;grid&quot;,&quot;calendar&quot;],&quot;default&quot;:&quot;list&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Perilaku&quot;},&quot;weekStart&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;monday&quot;,&quot;sunday&quot;],&quot;default&quot;:&quot;sunday&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Kalender&quot;},&quot;maxCalLanes&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:3,&quot;min&quot;:1,&quot;max&quot;:6,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Kalender&quot;}}">
+class Component extends DCLogic {
+  constructor(props){
+    super(props);
+    this.PAL = ['#0A84FF','#FF9F0A','#34C759','#BF5AF2','#FF375F','#30B0C7','#5E5CE6','#FFD60A','#AC8E68','#64D2FF'];
+    const today = new Date();
+    this.state = {
+      loaded:false, theme:'light',
+      view: (props && props.defaultView) || 'list',
+      search:'', filterCat:'all', sort:'date-desc',
+      activities:[], categories:[],
+      calYear: today.getFullYear(), calMonth: today.getMonth(),
+      width: (typeof window!=='undefined' ? window.innerWidth : 1200),
+      sidebarOpen:false,
+      editorOpen:false, editingId:null, form:null,
+      catMgrOpen:false, catForm:{name:'', color:this.PAL[0]},
+      lightbox:null,
+      dayView:null,
+      shareOpen:false, shareView:false, shareCfg:null,
+      toast:null,
+    };
+  }
+  componentDidMount(){
+    this._mounted = true;
+    this.load();
+    this._onResize = ()=>{ if(this._mounted) this.setState({width: window.innerWidth}); };
+    window.addEventListener('resize', this._onResize);
+    this._onHash = ()=> this.parseHash();
+    window.addEventListener('hashchange', this._onHash);
+    setTimeout(()=> this.parseHash(), 0);
+  }
+  componentWillUnmount(){
+    this._mounted=false;
+    window.removeEventListener('resize', this._onResize);
+    window.removeEventListener('hashchange', this._onHash);
+  }
+
+  // ---------- persistence ----------
+  KEY(){ return 'jkk:data:v1'; }
+  load(){
+    let data=null;
+    try{ data = JSON.parse(localStorage.getItem(this.KEY())||'null'); }catch(e){}
+    if(!data || !data.categories || !data.activities){ data = this.seed(); }
+    this.setState({
+      loaded:true,
+      activities: data.activities,
+      categories: data.categories,
+      theme: data.theme || 'light',
+      view: data.view || (this.props && this.props.defaultView) || 'list',
+    }, ()=> this.save());
+  }
+  save(){
+    try{
+      const {activities,categories,theme,view}=this.state;
+      localStorage.setItem(this.KEY(), JSON.stringify({activities,categories,theme,view}));
+    }catch(e){}
+  }
+  commit(patch, cb){ this.setState(patch, ()=>{ this.save(); if(cb) cb(); }); }
+  flash(msg){ this.setState({toast:msg}); clearTimeout(this._t); this._t=setTimeout(()=>{ if(this._mounted) this.setState({toast:null}); }, 2200); }
+
+  // ---------- utils ----------
+  uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+  parseD(iso){ const p=(iso||'').split('-').map(Number); return new Date(p[0]||2000,(p[1]||1)-1,p[2]||1); }
+  toISO(d){ const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), da=String(d.getDate()).padStart(2,'0'); return y+'-'+m+'-'+da; }
+  todayISO(){ return this.toISO(new Date()); }
+  fmt(iso, opts){ try{ return new Intl.DateTimeFormat('id-ID', opts).format(this.parseD(iso)); }catch(e){ return iso; } }
+  fmtLong(iso){ return this.fmt(iso,{weekday:'long',day:'numeric',month:'long',year:'numeric'}); }
+  fmtMed(iso){ return this.fmt(iso,{day:'numeric',month:'short',year:'numeric'}); }
+  fmtDay(iso){ return this.fmt(iso,{day:'numeric',month:'short'}); }
+  rangeLabel(s,e){
+    if(!e || s===e) return this.fmtMed(s);
+    const ds=this.parseD(s), de=this.parseD(e);
+    if(ds.getFullYear()===de.getFullYear() && ds.getMonth()===de.getMonth()){
+      const mo=this.fmt(s,{month:'short'});
+      return ds.getDate()+'–'+de.getDate()+' '+mo+' '+de.getFullYear();
+    }
+    if(ds.getFullYear()===de.getFullYear()) return this.fmtDay(s)+' – '+this.fmtMed(e);
+    return this.fmtMed(s)+' – '+this.fmtMed(e);
+  }
+  timeLabel(a){ if(a.startTime&&a.endTime) return a.startTime+'–'+a.endTime; if(a.startTime) return 'mulai '+a.startTime; return ''; }
+  daysSpan(a){ const s=this.parseD(a.startDate), e=this.parseD(a.endDate||a.startDate); return Math.round((e-s)/86400000)+1; }
+  catById(id){ return this.state.categories.find(c=>c.id===id); }
+  readableOn(hex){ try{ const h=hex.replace('#',''); const r=parseInt(h.slice(0,2),16)/255,g=parseInt(h.slice(2,4),16)/255,b=parseInt(h.slice(4,6),16)/255; const L=0.2126*r+0.7152*g+0.0722*b; return L>0.62?'#1d1d1f':'#ffffff'; }catch(e){ return '#fff'; } }
+
+  // ---------- seed ----------
+  seed(){
+    const C=(name,ci)=>({id:this.uid(),name:name,color:this.PAL[ci]});
+    const cats=[ C('Penyusunan Laporan',0), C('Pelayanan Administrasi',2), C('Rapat & Koordinasi',3), C('Pengembangan Sistem',5), C('Monitoring & Evaluasi',1) ];
+    const id=(n)=>cats[n].id;
+    const L=(name,url)=>({id:this.uid(),type:'link',name:name,url:url});
+    const A=(ci,sd,ed,st,et,title,cap,ev)=>({id:this.uid(),categoryId:id(ci),startDate:sd,endDate:ed||sd,startTime:st||'',endTime:et||'',title:title,capaian:cap,evidence:ev||[]});
+    const activities=[
+      A(0,'2026-06-29','2026-07-01','','','Penyusunan Laporan Kinerja Triwulan II','Menyelesaikan draf Laporan Kinerja Triwulan II meliputi rekap capaian indikator, realisasi anggaran, dan dokumentasi kegiatan. Draf telah dikirim ke koordinator untuk direviu.',[L('Draf Laporan (Google Docs)','https://drive.google.com/'),L('Lampiran Data Pendukung','https://drive.google.com/')]),
+      A(2,'2026-07-01','2026-07-01','09:00','11:30','Rapat Koordinasi Program Kerja Semester','Mengikuti rapat koordinasi pembahasan target program kerja semester berikutnya. Mencatat 6 poin tindak lanjut dan menyusun notula rapat.',[L('Notula Rapat','https://drive.google.com/')]),
+      A(1,'2026-06-30','2026-06-30','','','Verifikasi Berkas Kepegawaian','Memverifikasi 24 berkas usulan kenaikan pangkat pegawai. Seluruh berkas telah dicek kelengkapannya, 21 dinyatakan lengkap dan 3 dikembalikan untuk dilengkapi.',[]),
+      A(3,'2026-06-24','2026-06-27','','','Pengembangan Modul Input Jurnal Kegiatan','Mengembangkan modul input data jurnal kegiatan pada aplikasi internal, termasuk fitur unggah bukti dukung dan validasi rentang tanggal.',[L('Repository','https://drive.google.com/'),L('Dokumentasi Teknis','https://drive.google.com/')]),
+      A(4,'2026-07-02','2026-07-03','','','Monitoring Pelaksanaan Kegiatan Lapangan','Melaksanakan monitoring ke 3 lokasi kegiatan lapangan untuk memastikan kesesuaian pelaksanaan dengan rencana kerja. Menyusun catatan temuan dan rekomendasi tindak lanjut.',[L('Foto Dokumentasi (Drive)','https://drive.google.com/')]),
+      A(1,'2026-07-03','2026-07-03','13:00','15:00','Pelayanan Surat Masuk dan Disposisi','Memproses 18 surat masuk, melakukan pencatatan agenda, dan menyiapkan lembar disposisi untuk pimpinan.',[]),
+      A(0,'2026-07-06','2026-07-06','','','Rekapitulasi Realisasi Anggaran Bulanan','Menyusun rekapitulasi realisasi anggaran bulan Juni 2026 dan menyiapkan bahan evaluasi serapan anggaran.',[L('Spreadsheet Rekap','https://drive.google.com/')]),
+      A(2,'2026-07-07','2026-07-08','10:00','12:00','Koordinasi Persiapan Bimbingan Teknis','Berkoordinasi dengan narasumber dan panitia terkait persiapan bimbingan teknis: jadwal, materi, dan kebutuhan logistik.',[]),
+    ];
+    return { activities:activities, categories:cats, theme:'light', view:(this.props&&this.props.defaultView)||'list' };
+  }
+
+  // ---------- filtering ----------
+  getFiltered(){
+    const {activities,search,filterCat,sort}=this.state;
+    let arr=activities.slice();
+    if(filterCat!=='all') arr=arr.filter(a=>a.categoryId===filterCat);
+    const q=(search||'').trim().toLowerCase();
+    if(q) arr=arr.filter(a=>{ const c=this.catById(a.categoryId); return (a.title||'').toLowerCase().includes(q)||(a.capaian||'').toLowerCase().includes(q)||((c&&c.name)||'').toLowerCase().includes(q); });
+    arr.sort((a,b)=>{
+      if(sort==='date-asc') return a.startDate<b.startDate?-1:a.startDate>b.startDate?1:0;
+      if(sort==='title') return (a.title||'').localeCompare(b.title||'');
+      return a.startDate>b.startDate?-1:a.startDate<b.startDate?1:0;
+    });
+    return arr;
+  }
+  enrich(a){
+    const c=this.catById(a.categoryId);
+    const ev=a.evidence||[];
+    const images=ev.filter(e=>e.type==='image');
+    const links=ev.filter(e=>e.type==='link');
+    const imgUrls=images.map(x=>x.url);
+    const title=a.title;
+    const isRange=a.endDate && a.endDate!==a.startDate;
+    return {
+      id:a.id, title:title, capaian:a.capaian,
+      catName: c?c.name:'Tanpa Kategori', catColor: c?c.color:'#8e8e93',
+      dateLabel: this.rangeLabel(a.startDate,a.endDate),
+      startDate:a.startDate, endDate:a.endDate||a.startDate,
+      isRange:isRange, rangeBadge: isRange? this.rangeLabel(a.startDate,a.endDate):'',
+      timeLabel: this.timeLabel(a),
+      cover: imgUrls[0]||null, hasCover: imgUrls.length>0, noCover: imgUrls.length===0,
+      imgCount: imgUrls.length, imgCountMore: imgUrls.length>1, imgCountLabel: imgUrls.length+' foto',
+      links: links.map(l=>({url:l.url,name:l.name||l.url})),
+      linkCount: links.length, evCount: ev.length,
+      coverNote: links.length? 'tautan bukti' : 'tanpa bukti',
+      thumbs: imgUrls.map((url,i)=>({url:url, onClick:(e)=>{ if(e&&e.stopPropagation)e.stopPropagation(); this.openLightbox(imgUrls,i,title); }})),
+      onEdit:()=>this.openEdit(a.id),
+      onOpenImages:(e)=>{ if(e&&e.stopPropagation)e.stopPropagation(); if(imgUrls.length) this.openLightbox(imgUrls,0,title); },
+    };
+  }
+  buildGroups(arr, asc){
+    const map={};
+    arr.forEach(a=>{ (map[a.startDate]=map[a.startDate]||[]).push(a); });
+    const keys=Object.keys(map).sort((a,b)=> asc? (a<b?-1:1) : (a>b?-1:1));
+    return keys.map(k=>({ key:k, label:this.fmtLong(k), countLabel: map[k].length+' kegiatan', items: map[k].map(a=>this.enrich(a)) }));
+  }
+  buildDay(iso){
+    const acts=this.state.activities.filter(a=> a.startDate<=iso && (a.endDate||a.startDate)>=iso);
+    acts.sort((a,b)=>{ const at=a.startTime||'~', bt=b.startTime||'~'; return at<bt?-1:at>bt?1:0; });
+    return { iso:iso, label:this.fmtLong(iso), count:acts.length, countLabel:acts.length+' kegiatan', empty:acts.length===0, items:acts.map(a=>this.enrich(a)), onAdd:()=>this.openNewOn(iso) };
+  }
+
+  // ---------- calendar ----------
+  buildCalendar(){
+    const {calYear,calMonth,filterCat,activities}=this.state;
+    const weekStartMon = ((this.props&&this.props.weekStart)||'monday')!=='sunday';
+    const maxLanes = (this.props&&this.props.maxCalLanes)||3;
+    const first=new Date(calYear,calMonth,1);
+    const offset = weekStartMon ? ((first.getDay()+6)%7) : first.getDay();
+    const daysInMonth=new Date(calYear,calMonth+1,0).getDate();
+    const rows=Math.ceil((offset+daysInMonth)/7);
+    const gridStart=new Date(calYear,calMonth,1-offset);
+    const todayISO=this.todayISO();
+    let acts=activities.filter(a=> filterCat==='all'||a.categoryId===filterCat).map(a=>({a:a, s:this.parseD(a.startDate), e:this.parseD(a.endDate||a.startDate)}));
+    const weeks=[];
+    for(let w=0; w<rows; w++){
+      const weekStart=new Date(gridStart); weekStart.setDate(gridStart.getDate()+w*7);
+      const weekEnd=new Date(weekStart); weekEnd.setDate(weekStart.getDate()+6);
+      const days=[];
+      for(let d=0; d<7; d++){
+        const dd=new Date(weekStart); dd.setDate(weekStart.getDate()+d);
+        const iso=this.toISO(dd);
+        const inMonth=dd.getMonth()===calMonth;
+        const isToday=iso===todayISO;
+        const numStyle = isToday
+          ? 'display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;padding:0 5px;border-radius:12px;background:var(--accent);color:#fff;font-weight:680;font-size:13px;'
+          : 'display:inline-block;padding:2px 5px;font-size:13px;font-weight:'+(inMonth?'560':'400')+';color:'+(inMonth?'var(--text)':'var(--text-3)')+';';
+        const cellStyle='display:flex;align-items:flex-start;justify-content:flex-start;padding:6px;min-height:inherit;border-right:1px solid var(--sep);border-top:1px solid var(--sep);background:'+(isToday?'var(--accent-soft)':'transparent')+';cursor:pointer;text-align:left;font:inherit;color:inherit;';
+        days.push({ iso:iso, num:dd.getDate(), inMonth:inMonth, isToday:isToday, numStyle:numStyle, cellStyle:cellStyle, onClick:()=>this.openDay(iso) });
+      }
+      const segs=[];
+      acts.forEach(o=>{
+        if(o.e<weekStart || o.s>weekEnd) return;
+        const segStart = o.s<weekStart?weekStart:o.s;
+        const segEnd = o.e>weekEnd?weekEnd:o.e;
+        const startCol=Math.round((segStart-weekStart)/86400000);
+        const endCol=Math.round((segEnd-weekStart)/86400000);
+        segs.push({a:o.a, startCol:startCol, endCol:endCol, span:endCol-startCol+1, isStart:o.s>=weekStart, isEnd:o.e<=weekEnd});
+      });
+      segs.sort((x,y)=> x.startCol-y.startCol || y.span-x.span);
+      const lanes=[];
+      segs.forEach(seg=>{
+        let lane=0;
+        while(true){
+          const occ=lanes[lane]||(lanes[lane]=[]);
+          const clash=occ.some(o=> !(seg.startCol>o.endCol || seg.endCol<o.startCol));
+          if(!clash){ occ.push({startCol:seg.startCol,endCol:seg.endCol}); seg.lane=lane; break; }
+          lane++;
+        }
+      });
+      const gap=4; const bars=[]; const overflow={}; let usedLanes=0;
+      segs.forEach(seg=>{
+        if(seg.lane>=maxLanes){ for(let c=seg.startCol;c<=seg.endCol;c++) overflow[c]=(overflow[c]||0)+1; return; }
+        usedLanes=Math.max(usedLanes, seg.lane+1);
+        const c=this.catById(seg.a.categoryId); const color=c?c.color:'#8e8e93'; const tc=this.readableOn(color);
+        const leftPct=(seg.startCol/7*100).toFixed(4);
+        const widthCalc='calc('+(seg.span/7*100).toFixed(4)+'% - '+gap+'px)';
+        const rl=seg.isStart?'6px':'2px', rr=seg.isEnd?'6px':'2px';
+        const css='position:absolute;left:calc('+leftPct+'% + 2px);width:'+widthCalc+';top:'+(seg.lane*24)+'px;height:20px;display:flex;align-items:center;padding:0 7px;font-size:11px;font-weight:600;line-height:20px;color:'+tc+';background:'+color+';border-radius:'+rl+' '+rr+' '+rr+' '+rl+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;box-shadow:0 1px 1.5px rgba(0,0,0,.14);pointer-events:auto;';
+        bars.push({ title:seg.a.title, css:css, showLabel: seg.isStart||seg.startCol===0, onClick:()=>this.openEdit(seg.a.id) });
+      });
+      const overflowCells=Object.keys(overflow).map(c=>({ n:overflow[c], style:'position:absolute;left:'+(Number(c)/7*100).toFixed(4)+'%;width:'+(100/7).toFixed(4)+'%;top:'+(Math.min(usedLanes,maxLanes)*24)+'px;pointer-events:none;' }));
+      const laneCount=Math.max(Math.min(usedLanes,maxLanes),1);
+      const minH=Math.max(96, 34 + laneCount*24 + (overflowCells.length?16:0) + 6);
+      weeks.push({ days:days, bars:bars, overflowCells:overflowCells, minH: minH+'px' });
+    }
+    return { weeks:weeks, weekdays: weekStartMon?['Sen','Sel','Rab','Kam','Jum','Sab','Min']:['Min','Sen','Sel','Rab','Kam','Jum','Sab'], label: this.fmt(this.toISO(first),{month:'long',year:'numeric'}) };
+  }
+
+  // ---------- editor ----------
+  blankForm(iso){ const cid=this.state.categories[0]?this.state.categories[0].id:''; const d=iso||this.todayISO(); return {categoryId:cid,startDate:d,endDate:d,isRange:false,hasTime:false,startTime:'',endTime:'',title:'',capaian:'',evidence:[],linkDraft:''}; }
+  openNew(){ this.setState({editorOpen:true, editingId:null, form:this.blankForm(), sidebarOpen:false}); }
+  openNewOn(iso){ this.setState({editorOpen:true, editingId:null, form:this.blankForm(iso)}); }
+  openDay(iso){ this.setState({dayView:iso, sidebarOpen:false}); if(typeof window!=='undefined'){ try{ window.scrollTo(0,0); }catch(e){} } }
+  closeDay(){ this.setState({dayView:null}); }
+  openEdit(id){ const a=this.state.activities.find(x=>x.id===id); if(!a) return; this.setState({editorOpen:true, editingId:id, form:{ categoryId:a.categoryId, startDate:a.startDate, endDate:a.endDate||a.startDate, isRange: !!(a.endDate&&a.endDate!==a.startDate), hasTime: !!(a.startTime||a.endTime), startTime:a.startTime||'', endTime:a.endTime||'', title:a.title||'', capaian:a.capaian||'', evidence:(a.evidence||[]).slice(), linkDraft:'' }}); }
+  closeEditor(){ this.setState({editorOpen:false, editingId:null, form:null}); }
+  setForm(patch){ this.setState(s=>({form:{...s.form, ...(typeof patch==='function'?patch(s.form):patch)}})); }
+  saveForm(){
+    const f=this.state.form; if(!f) return;
+    if(!f.title||!f.title.trim()){ this.flash('Nama kegiatan wajib diisi'); return; }
+    let endDate = f.isRange ? (f.endDate||f.startDate) : f.startDate;
+    if(endDate<f.startDate) endDate=f.startDate;
+    const act={ id: this.state.editingId||this.uid(), categoryId: f.categoryId||(this.state.categories[0]&&this.state.categories[0].id)||'', startDate:f.startDate, endDate:endDate, startTime: f.hasTime?f.startTime:'', endTime: f.hasTime?f.endTime:'', title:f.title.trim(), capaian:(f.capaian||'').trim(), evidence: f.evidence||[] };
+    let acts=this.state.activities.slice();
+    const idx=acts.findIndex(a=>a.id===act.id);
+    const editing=idx>=0;
+    if(editing) acts[idx]=act; else acts.unshift(act);
+    this.commit({activities:acts, editorOpen:false, editingId:null, form:null}, ()=> this.flash(editing?'Kegiatan diperbarui':'Kegiatan ditambahkan'));
+  }
+  deleteCurrent(){ const id=this.state.editingId; if(!id) return; if(!window.confirm('Hapus kegiatan ini?')) return; const acts=this.state.activities.filter(a=>a.id!==id); this.commit({activities:acts, editorOpen:false, editingId:null, form:null}, ()=>this.flash('Kegiatan dihapus')); }
+  addLink(){ const f=this.state.form; const url=(f.linkDraft||'').trim(); if(!url) return; let name=url; try{ name=new URL(url.match(/^https?:/)?url:'https://'+url).hostname.replace('www.',''); }catch(e){} this.setForm(ff=>({evidence:[...ff.evidence,{id:this.uid(),type:'link',name:name,url:url}], linkDraft:''})); }
+  compress(file){ return new Promise((res)=>{ const rd=new FileReader(); rd.onload=()=>{ const img=new Image(); img.onload=()=>{ const max=1280; let w=img.width,h=img.height; if(w>max||h>max){ const r=Math.min(max/w,max/h); w=Math.round(w*r); h=Math.round(h*r); } const cv=document.createElement('canvas'); cv.width=w; cv.height=h; cv.getContext('2d').drawImage(img,0,0,w,h); try{ res(cv.toDataURL('image/jpeg',0.72)); }catch(e){ res(rd.result); } }; img.onerror=()=>res(rd.result); img.src=rd.result; }; rd.readAsDataURL(file); }); }
+  addImages(e){ const files=[].slice.call(e.target.files||[]); if(!files.length) return; Promise.all(files.map(f=> this.compress(f).then(url=>({id:this.uid(),type:'image',name:f.name,url:url})))).then(imgs=>{ this.setForm(ff=>({evidence:[...ff.evidence, ...imgs]})); this.flash(imgs.length+' gambar ditambahkan'); }); e.target.value=''; }
+  pasteImages(e){ const items=(e.clipboardData&&e.clipboardData.items)||[]; const files=[]; for(let i=0;i<items.length;i++){ const it=items[i]; if(it.kind==='file'&&/^image\//.test(it.type)){ const f=it.getAsFile(); if(f) files.push(f); } } if(!files.length) return; if(e.preventDefault) e.preventDefault(); Promise.all(files.map(f=> this.compress(f).then(url=>({id:this.uid(),type:'image',name:f.name||'clipboard.jpg',url:url})))).then(imgs=>{ this.setForm(ff=>({evidence:[...ff.evidence, ...imgs]})); this.flash(imgs.length+' gambar dari clipboard ditambahkan'); }); }
+  removeEvidence(eid){ this.setForm(ff=>({evidence: ff.evidence.filter(x=>x.id!==eid)})); }
+
+  // ---------- categories ----------
+  openCatMgr(){ this.setState({catMgrOpen:true, sidebarOpen:false, catForm:{name:'', color:this.PAL[0]}}); }
+  closeCatMgr(){ this.setState({catMgrOpen:false}); }
+  renameCat(id, name){ const cats=this.state.categories.map(c=>c.id===id?{...c,name:name}:c); this.commit({categories:cats}); }
+  cycleColor(id){ const cats=this.state.categories.map(c=>{ if(c.id!==id) return c; const i=this.PAL.indexOf(c.color); return {...c, color:this.PAL[(i+1)%this.PAL.length]}; }); this.commit({categories:cats}); }
+  deleteCat(id){ const used=this.state.activities.filter(a=>a.categoryId===id).length; const msg=used?('Hapus rencana kinerja ini? '+used+' kegiatan akan menjadi "Tanpa Kategori".'):'Hapus rencana kinerja ini?'; if(!window.confirm(msg)) return; const cats=this.state.categories.filter(c=>c.id!==id); const patch={categories:cats}; if(this.state.filterCat===id) patch.filterCat='all'; this.commit(patch); }
+  addCat(){ const cf=this.state.catForm; const name=(cf.name||'').trim(); if(!name){ this.flash('Nama rencana kinerja wajib diisi'); return; } const cat={id:this.uid(),name:name,color:cf.color}; this.commit({categories:[...this.state.categories, cat], catForm:{name:'', color:this.PAL[(this.PAL.indexOf(cf.color)+1)%this.PAL.length]}}); }
+
+  // ---------- lightbox ----------
+  openLightbox(images, index, title){ if(!images||!images.length) return; this.setState({lightbox:{images:images.slice(), index:index||0, title:title||''}}); }
+  lbClose(){ this.setState({lightbox:null}); }
+  lbStep(dir){ this.setState(s=>{ if(!s.lightbox) return {}; const n=s.lightbox.images.length; return {lightbox:{...s.lightbox, index:(s.lightbox.index+dir+n)%n}}; }); }
+
+  // ---------- export/import ----------
+  download(name, content, type){ const blob=new Blob([content],{type:type}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1500); }
+  exportCsv(){ const esc=v=>{ v=(v==null?'':String(v)); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }; const head=['Rencana Kinerja','Tanggal Mulai','Tanggal Selesai','Jam Mulai','Jam Selesai','Kegiatan','Capaian','Bukti Dukung']; const rows=this.getFiltered().map(a=>{ const c=this.catById(a.categoryId); const ev=(a.evidence||[]).map(e=> e.type==='link'? e.url : '[gambar] '+(e.name||'')).join(' | '); return [c?c.name:'',a.startDate,a.endDate,a.startTime,a.endTime,a.title,a.capaian,ev].map(esc).join(','); }); const csv=[head.join(','),...rows].join('\r\n'); this.download('jurnal-kegiatan.csv','\ufeff'+csv,'text/csv;charset=utf-8'); this.flash('Spreadsheet (CSV) diunduh'); }
+  exportJson(){ const {activities,categories}=this.state; this.download('jurnal-kegiatan.json', JSON.stringify({activities,categories,exportedAt:new Date().toISOString()},null,2), 'application/json'); this.flash('Data (JSON) diunduh'); }
+  importJson(e){ const file=(e.target.files||[])[0]; if(!file) return; const rd=new FileReader(); rd.onload=()=>{ try{ const d=JSON.parse(rd.result); if(d.activities&&d.categories){ this.commit({activities:d.activities, categories:d.categories, sidebarOpen:false}, ()=>this.flash('Data berhasil diimpor')); } else this.flash('Format file tidak dikenali'); }catch(err){ this.flash('Gagal membaca file'); } }; rd.readAsText(file); e.target.value=''; }
+
+  // ---------- share ----------
+  minMax(){ const ds=[]; this.state.activities.forEach(a=>{ ds.push(a.startDate); ds.push(a.endDate||a.startDate); }); ds.sort(); return {min:ds[0]||this.todayISO(), max:ds[ds.length-1]||this.todayISO()}; }
+  openShare(){ const t=new Date(); const from=this.toISO(new Date(t.getFullYear(),t.getMonth(),1)); const to=this.todayISO(); this.setState({shareOpen:true, sidebarOpen:false, shareCfg:{title:'Laporan Kegiatan Kerja', from:from, to:to, stats:true, timeline:true, grid:true, report:true}}); }
+  closeShare(){ this.setState({shareOpen:false}); }
+  setCfg(patch){ this.setState(s=>({shareCfg:{...s.shareCfg, ...patch}})); }
+  shQuick(kind){ const t=new Date(); let from,to=this.todayISO(); if(kind==='week'){ const d=new Date(); const off=(d.getDay()+6)%7; const mon=new Date(d); mon.setDate(d.getDate()-off); from=this.toISO(mon); to=this.toISO(new Date(mon.getFullYear(),mon.getMonth(),mon.getDate()+6)); } else if(kind==='month'){ from=this.toISO(new Date(t.getFullYear(),t.getMonth(),1)); to=this.toISO(new Date(t.getFullYear(),t.getMonth()+1,0)); } else if(kind==='30'){ const d=new Date(); d.setDate(d.getDate()-29); from=this.toISO(d); } else { const mm=this.minMax(); from=mm.min; to=mm.max; } this.setCfg({from:from,to:to}); }
+  actsInRange(cfg){ return this.state.activities.filter(a=> (a.endDate||a.startDate)>=cfg.from && a.startDate<=cfg.to); }
+  hashFor(cfg){ const secs=['stats','timeline','grid','report'].filter(k=>cfg[k]); return 'laporan='+cfg.from+'..'+cfg.to+'&s='+secs.join(',')+'&t='+encodeURIComponent(cfg.title||'Laporan Kegiatan'); }
+  shareUrl(cfg){ return location.origin+location.pathname+'#'+this.hashFor(cfg); }
+  shCopy(){ const url=this.shareUrl(this.state.shareCfg); const done=()=>this.flash('Tautan disalin'); if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(url).then(done, ()=>this.flash('Salin manual dari kotak tautan')); } else this.flash('Salin manual dari kotak tautan'); }
+  openReport(){ const cfg=this.state.shareCfg; try{ location.hash=this.hashFor(cfg); }catch(e){} this.setState({shareView:true, shareOpen:false, shareCfg:cfg}); if(typeof window!=='undefined') window.scrollTo(0,0); }
+  exitReport(){ try{ history.replaceState(null,'',location.pathname+location.search); }catch(e){ location.hash=''; } this.setState({shareView:false}); }
+  printReport(){ window.print(); }
+  parseHash(){ const h=location.hash||''; const m=h.match(/laporan=([0-9-]+)\.\.([0-9-]+)/); if(m){ const secM=h.match(/s=([a-z,]+)/); const secs=secM?secM[1].split(','):['stats','timeline','grid','report']; const tM=h.match(/t=([^&]+)/); let title='Laporan Kegiatan'; if(tM){ try{ title=decodeURIComponent(tM[1]); }catch(e){ title=tM[1]; } } this.setState({shareView:true, shareOpen:false, shareCfg:{ from:m[1], to:m[2], title:title, stats:secs.indexOf('stats')>=0, timeline:secs.indexOf('timeline')>=0, grid:secs.indexOf('grid')>=0, report:secs.indexOf('report')>=0 }}); } else if(this.state.shareView){ this.setState({shareView:false}); } }
+  buildReport(cfg){
+    let acts=this.actsInRange(cfg);
+    acts.sort((a,b)=> a.startDate<b.startDate?-1:a.startDate>b.startDate?1:0);
+    const items=acts.map(a=>this.enrich(a));
+    const total=acts.length;
+    const catMap={};
+    acts.forEach(a=>{ const c=this.catById(a.categoryId); const k=c?c.id:'none'; catMap[k]=catMap[k]||{name:c?c.name:'Tanpa Kategori',color:c?c.color:'#8e8e93',count:0}; catMap[k].count++; });
+    const catStats=Object.keys(catMap).map(k=>catMap[k]).sort((a,b)=>b.count-a.count).map(s=>({name:s.name,color:s.color,count:s.count,pct: total?Math.round(s.count/total*100):0, barStyle:'width:'+(total?(s.count/total*100):0)+'%;background:'+s.color+';'}));
+    const dayMs=86400000; const fromD=this.parseD(cfg.from), toD=this.parseD(cfg.to);
+    const rangeDays=Math.max(1, Math.round((toD-fromD)/dayMs)+1);
+    const gRows=acts.map(a=>{ const s=this.parseD(a.startDate), e=this.parseD(a.endDate||a.startDate); const cs=s<fromD?fromD:s, ce=e>toD?toD:e; const left=(cs-fromD)/dayMs/rangeDays*100; const width=((ce-cs)/dayMs+1)/rangeDays*100; const c=this.catById(a.categoryId); const color=c?c.color:'#8e8e93'; const imgs=(a.evidence||[]).filter(x=>x.type==='image').map(x=>x.url); return { title:a.title, dateLabel:this.rangeLabel(a.startDate,a.endDate), color:color, barStyle:'left:'+left.toFixed(3)+'%;width:'+Math.max(width,1.2).toFixed(3)+'%;background:'+color+';', onClick:()=>{ if(imgs.length) this.openLightbox(imgs,0,a.title); } }; });
+    const tcount=Math.min(rangeDays,8); const ticks=[]; const denom=Math.max(tcount-1,1);
+    for(let i=0;i<tcount;i++){ const dd=new Date(fromD); dd.setDate(dd.getDate()+Math.round(i*(rangeDays-1)/denom)); ticks.push({ left:(i/denom*100), label:this.fmtDay(this.toISO(dd)) }); }
+    const groups=this.buildGroups(acts, true);
+    return { title:cfg.title||'Laporan Kegiatan', rangeLabel:this.rangeLabel(cfg.from,cfg.to), from:cfg.from, to:cfg.to, showStats:cfg.stats, showTimeline:cfg.timeline, showGrid:cfg.grid, showReport:cfg.report, total:total, catCount:catStats.length, rangeDays:rangeDays, catStats:catStats, items:items, gRows:gRows, ticks:ticks, groups:groups, empty: total===0, generated: this.fmt(this.todayISO(),{day:'numeric',month:'long',year:'numeric'}) };
+  }
+
+  // ---------- theme/view ----------
+  toggleTheme(){ this.commit({theme: this.state.theme==='dark'?'light':'dark'}); }
+  setView(v){ this.commit({view:v}); }
+
+  navStyle(active){ return 'border:none;background:'+(active?'var(--surface)':'transparent')+';color:'+(active?'var(--text)':'var(--text-2)')+';border-radius:8px;padding:7px 14px;font-size:13.5px;font-weight:'+(active?'640':'500')+';cursor:pointer;box-shadow:'+(active?'0 1px 3px rgba(0,0,0,.14)':'none')+';transition:all .15s ease;'; }
+  sideStyle(active){ return 'display:flex;align-items:center;gap:10px;width:100%;border:none;background:'+(active?'var(--fill)':'transparent')+';color:var(--text);border-radius:10px;padding:9px 10px;font-size:14px;font-weight:'+(active?'600':'500')+';cursor:pointer;'; }
+  swTrack(on){ return 'position:relative;width:44px;height:26px;border-radius:16px;transition:background .2s;background:'+(on?'var(--accent)':'var(--fill-2)')+';display:inline-block;flex:none;'; }
+  swKnob(on){ return 'position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform .2s;transform:'+(on?'translateX(18px)':'none')+';'; }
+
+  renderVals(){
+    const s=this.state;
+    const isMobile = s.width < 860;
+    const isDark = s.theme==='dark';
+    const filtered = this.getFiltered();
+    const hasResults = filtered.length>0;
+
+    const cats = s.categories.map(c=>({
+      id:c.id, name:c.name, color:c.color,
+      count: s.activities.filter(a=>a.categoryId===c.id).length,
+      itemStyle: this.sideStyle(s.filterCat===c.id),
+      onClick: ()=> this.commit({filterCat:c.id, sidebarOpen:false}),
+    }));
+
+    const segItems=[
+      {label:'List', onClick:()=>this.setView('list'), style:this.navStyle(s.view==='list')},
+      {label:'Grid', onClick:()=>this.setView('grid'), style:this.navStyle(s.view==='grid')},
+      {label:'Kalender', onClick:()=>this.setView('calendar'), style:this.navStyle(s.view==='calendar')},
+    ];
+    const allNav=[{ itemStyle:this.sideStyle(s.filterCat==='all'), onClick:()=>this.commit({filterCat:'all', sidebarOpen:false}), count:s.activities.length }];
+
+    // form view-model
+    let form=null;
+    if(s.form){
+      form={ ...s.form,
+        hasEvidence:(s.form.evidence||[]).length>0,
+        evidence:(s.form.evidence||[]).map(e=>({ id:e.id, isImage:e.type==='image', isLink:e.type==='link', url:e.url, label: e.type==='link'?(e.name||e.url):(e.name||'Gambar'), onRemove:()=>this.removeEvidence(e.id) })),
+        rangeSw:[{track:this.swTrack(s.form.isRange), knob:this.swKnob(s.form.isRange)}],
+        timeSw:[{track:this.swTrack(s.form.hasTime), knob:this.swKnob(s.form.hasTime)}],
+        catChips: s.categories.map(c=>{ const active=s.form.categoryId===c.id; return { id:c.id, name:c.name, dotStyle:'width:9px;height:9px;border-radius:3px;flex:none;background:'+c.color+';', style:'display:inline-flex;align-items:center;gap:7px;padding:8px 13px;border-radius:11px;cursor:pointer;font-size:14px;white-space:nowrap;transition:all .12s ease;'+(active?'background:var(--accent-soft);border:1.5px solid var(--accent);color:var(--accent);font-weight:640;':'background:var(--bg);border:1px solid var(--sep-2);color:var(--text);font-weight:500;'), onClick:()=>this.setForm({categoryId:c.id}) }; }),
+      };
+    }
+
+    // catmgr
+    const catList = s.categories.map(c=>({ id:c.id, name:c.name, color:c.color, countLabel: s.activities.filter(a=>a.categoryId===c.id).length+' keg.', swatchStyle:'width:24px;height:24px;border-radius:7px;border:none;cursor:pointer;flex:none;background:'+c.color+';', onRename:(e)=>this.renameCat(c.id, e.target.value), cycleColor:()=>this.cycleColor(c.id), onDelete:()=>this.deleteCat(c.id) }));
+    const palette = this.PAL.map(col=>{ const sel=s.catForm.color===col; return { color:col, onPick:()=>this.setState({catForm:{...this.state.catForm, color:col}}), style:'width:28px;height:28px;border-radius:8px;cursor:pointer;background:'+col+';border:2px solid '+(sel?'var(--text)':'transparent')+';box-shadow:'+(sel?'inset 0 0 0 2px var(--surface)':'none')+';' }; });
+
+    // lightbox
+    let lightbox=null;
+    if(s.lightbox){ const lb=s.lightbox; lightbox={ current: lb.images[lb.index], title: lb.title, hasMany: lb.images.length>1, indexLabel:(lb.index+1)+' / '+lb.images.length, thumbs: lb.images.map((url,i)=>({ url:url, onClick:(e)=>{ if(e&&e.stopPropagation)e.stopPropagation(); this.setState({lightbox:{...lb,index:i}}); }, style:'width:52px;height:52px;border-radius:8px;border:2px solid '+(i===lb.index?'#fff':'transparent')+';background-size:cover;background-position:center;cursor:pointer;opacity:'+(i===lb.index?'1':'.55')+';background-image:url(\''+url+'\');' })) }; }
+
+    // share cfg vm
+    let shareCfg=null, shareUrl='', sharePreviewLabel='';
+    if(s.shareCfg){ const cf=s.shareCfg; shareCfg={ ...cf,
+      statsSw:[{track:this.swTrack(cf.stats), knob:this.swKnob(cf.stats)}],
+      timelineSw:[{track:this.swTrack(cf.timeline), knob:this.swKnob(cf.timeline)}],
+      gridSw:[{track:this.swTrack(cf.grid), knob:this.swKnob(cf.grid)}],
+      reportSw:[{track:this.swTrack(cf.report), knob:this.swKnob(cf.report)}],
+    };
+      shareUrl=this.shareUrl(cf);
+      const n=this.actsInRange(cf).length; sharePreviewLabel=n+' kegiatan';
+    }
+
+    const report = s.shareView && s.shareCfg ? this.buildReport(s.shareCfg) : null;
+
+    const h={
+      toggleTheme:()=>this.toggleTheme(),
+      viewList:()=>this.setView('list'), viewGrid:()=>this.setView('grid'), viewCal:()=>this.setView('calendar'),
+      setSearch:(e)=>this.setState({search:e.target.value}),
+      setSort:(e)=>this.commit({sort:e.target.value}),
+      filterAll:()=>this.commit({filterCat:'all', sidebarOpen:false}),
+      openSidebar:()=>this.setState({sidebarOpen:true}), closeSidebar:()=>this.setState({sidebarOpen:false}),
+      closeDay:()=>this.closeDay(), fPasteImages:(e)=>this.pasteImages(e),
+      openNew:()=>this.openNew(), closeEditor:()=>this.closeEditor(), saveForm:()=>this.saveForm(), deleteCurrent:()=>this.deleteCurrent(),
+      stop:(e)=>{ if(e&&e.stopPropagation) e.stopPropagation(); },
+      fSetCat:(e)=>this.setForm({categoryId:e.target.value}),
+      fSetStart:(e)=>this.setForm(ff=>({startDate:e.target.value, endDate: (!ff.isRange||ff.endDate<e.target.value)?e.target.value:ff.endDate})),
+      fSetEnd:(e)=>this.setForm({endDate:e.target.value}),
+      fToggleRange:()=>this.setForm(ff=>({isRange:!ff.isRange, endDate:ff.startDate})),
+      fToggleTime:()=>this.setForm(ff=>({hasTime:!ff.hasTime})),
+      fSetStartTime:(e)=>this.setForm({startTime:e.target.value}),
+      fSetEndTime:(e)=>this.setForm({endTime:e.target.value}),
+      fSetTitle:(e)=>this.setForm({title:e.target.value}),
+      fSetCapaian:(e)=>this.setForm({capaian:e.target.value}),
+      fSetLinkDraft:(e)=>this.setForm({linkDraft:e.target.value}),
+      fAddLink:()=>this.addLink(), fAddImages:(e)=>this.addImages(e),
+      openCatMgr:()=>this.openCatMgr(), closeCatMgr:()=>this.closeCatMgr(), catSetName:(e)=>this.setState({catForm:{...this.state.catForm,name:e.target.value}}), catAdd:()=>this.addCat(),
+      calPrev:()=>this.setState(st=>{ const d=new Date(st.calYear,st.calMonth-1,1); return {calYear:d.getFullYear(),calMonth:d.getMonth()}; }),
+      calNext:()=>this.setState(st=>{ const d=new Date(st.calYear,st.calMonth+1,1); return {calYear:d.getFullYear(),calMonth:d.getMonth()}; }),
+      calToday:()=>{ const t=new Date(); this.setState({calYear:t.getFullYear(),calMonth:t.getMonth()}); },
+      lbClose:()=>this.lbClose(), lbPrev:()=>this.lbStep(-1), lbNext:()=>this.lbStep(1),
+      exportCsv:()=>this.exportCsv(), exportJson:()=>this.exportJson(), importJson:(e)=>this.importJson(e),
+      openShare:()=>this.openShare(), closeShare:()=>this.closeShare(),
+      shSetTitle:(e)=>this.setCfg({title:e.target.value}), shSetFrom:(e)=>this.setCfg({from:e.target.value}), shSetTo:(e)=>this.setCfg({to:e.target.value}),
+      shToggleStats:()=>this.setCfg({stats:!this.state.shareCfg.stats}), shToggleTimeline:()=>this.setCfg({timeline:!this.state.shareCfg.timeline}), shToggleGrid:()=>this.setCfg({grid:!this.state.shareCfg.grid}), shToggleReport:()=>this.setCfg({report:!this.state.shareCfg.report}),
+      shThisWeek:()=>this.shQuick('week'), shThisMonth:()=>this.shQuick('month'), sh30:()=>this.shQuick('30'), shAll:()=>this.shQuick('all'),
+      shCopy:()=>this.shCopy(), openReport:()=>this.openReport(), exitReport:()=>this.exitReport(), printReport:()=>this.printReport(),
+    };
+
+    return {
+      notLoaded: !s.loaded,
+      appMode: s.loaded && !s.shareView,
+      shareView: s.shareView,
+      theme: s.theme, isDark: isDark,
+      isMobile: isMobile, showSidebar: !isMobile, mobileSheet: isMobile && s.sidebarOpen,
+      themeLabel: isDark?'Mode Terang':'Mode Gelap',
+      view: s.view, isList: s.view==='list', isGrid: s.view==='grid', isCal: s.view==='calendar',
+      segItems: segItems, allNav: allNav,
+      search: s.search, sort: s.sort,
+      cats: cats, totalCount: s.activities.length,
+      hasResults: hasResults, noResults: !hasResults,
+      listGroups: this.buildGroups(filtered, s.sort==='date-asc'),
+      gridItems: filtered.map(a=>this.enrich(a)),
+      cal: this.buildCalendar(),
+      editorOpen: s.editorOpen, isEditing: !!s.editingId, editorTitle: s.editingId?'Ubah Kegiatan':'Kegiatan Baru',
+      form: form, catOptions: s.categories,
+      overlayAlign: isMobile?'flex-end':'center', overlayPad: isMobile?'0':'24px',
+      modalCardStyle: 'background:var(--surface);box-shadow:var(--shadow-lg);display:flex;flex-direction:column;overflow:hidden;' + (isMobile ? 'width:100%;max-width:640px;border-radius:22px 22px 0 0;max-height:94dvh;animation:jkk-sheet .3s cubic-bezier(.32,.72,0,1);' : 'width:600px;max-width:calc(100vw - 32px);border-radius:20px;max-height:88dvh;animation:jkk-pop .22s ease;'),
+      catMgrOpen: s.catMgrOpen, catList: catList, catForm: s.catForm, palette: palette,
+      dayViewOpen: s.loaded && !!s.dayView && !s.shareView,
+      day: s.dayView ? this.buildDay(s.dayView) : null,
+      lightboxOpen: !!s.lightbox, lightbox: lightbox,
+      shareOpen: s.shareOpen, shareCfg: shareCfg, shareUrl: shareUrl, sharePreviewLabel: sharePreviewLabel,
+      report: report,
+      toast: s.toast,
+      h: h,
+    };
+  }
+}
+</script>
+</body>
+</html>
