@@ -1,13 +1,16 @@
 // Domain model — mirrors the data shape used by the Claude Design prototype.
-// Activities + Categories live in Google Sheets; evidence images live in Google Drive
-// (evidence stores the Drive fileId, never the binary).
+// Activities + Categories live in Google Sheets; evidence images live in Vercel
+// Blob (public CDN url) or, for legacy entries, Google Drive (fileId — the
+// binary never sits in the sheet).
 
 export type EvidenceImage = {
   id: string;
   type: "image";
   name: string;
-  /** Google Drive file id. The client renders it via /api/image/[fileId]. */
-  fileId: string;
+  /** Public CDN URL (Vercel Blob) — set on new uploads. */
+  url?: string;
+  /** Legacy Google Drive file id, rendered via /api/image/[fileId]. */
+  fileId?: string;
 };
 
 export type EvidenceLink = {

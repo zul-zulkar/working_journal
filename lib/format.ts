@@ -100,7 +100,8 @@ export function readableOn(hex: string): string {
   }
 }
 
-/** Evidence image url served through the internal proxy. */
-export function imageUrl(fileId: string): string {
-  return `/api/image/${encodeURIComponent(fileId)}`;
+/** Evidence image url: direct CDN url (Blob) or the legacy Drive proxy. */
+export function imageUrl(img: { url?: string; fileId?: string }): string {
+  if (img.url) return img.url;
+  return `/api/image/${encodeURIComponent(img.fileId || "")}`;
 }

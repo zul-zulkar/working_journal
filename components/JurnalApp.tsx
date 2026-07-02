@@ -8,6 +8,7 @@ import {
   catById,
   fmt,
   fmtLong,
+  imageUrl,
   parseD,
   readableOn,
   toISO,
@@ -22,6 +23,7 @@ import {
 } from "@/lib/report";
 import Lightbox, { LightboxState } from "./Lightbox";
 import ReportView from "./ReportView";
+import CategorySelect from "./CategorySelect";
 
 const WEEK_START: "sunday" | "monday" = "sunday";
 const MAX_CAL_LANES = 3;
@@ -575,20 +577,25 @@ export default class JurnalApp extends React.Component<{}, State> {
     });
   }
   async uploadEvidence(items: { blob: Blob; name: string }[]) {
-    const fd = new FormData();
-    items.forEach((it) => fd.append("file", it.blob, it.name));
-    const res = await fetch("/api/upload", { method: "POST", body: fd });
-    if (!res.ok) {
-      const j = await res.json().catch(() => ({}));
-      throw new Error(j.error || "Gagal mengunggah gambar.");
+    // One request per file: stays under Vercel's ~4.5 MB body cap and lets a
+    // single failure surface without losing the files already uploaded.
+    const out: { id: string; type: "image"; name: string; url?: string; fileId?: string }[] = [];
+    for (const it of items) {
+      const fd = new FormData();
+      fd.append("file", it.blob, it.name);
+      const res = await fetch("/api/upload", { method: "POST", body: fd });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || "Gagal mengunggah gambar.");
+      }
+      const data = (await res.json()) as {
+        files: { url?: string; fileId?: string; name: string }[];
+      };
+      for (const f of data.files) {
+        out.push({ id: uid(), type: "image", name: f.name, url: f.url, fileId: f.fileId });
+      }
     }
-    const data = (await res.json()) as { files: { fileId: string; name: string }[] };
-    return data.files.map((f) => ({
-      id: uid(),
-      type: "image" as const,
-      name: f.name,
-      fileId: f.fileId,
-    }));
+    return out;
   }
   addImages(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files || []);
@@ -683,74 +690,71 @@ export default class JurnalApp extends React.Component<{}, State> {
     this.setState({ lightbox: null });
   }
 
-  // ---------- export / import ----------
-  download(name: string, content: BlobPart, type: string) {
-    const blob = new Blob([content], { type });
-    const url = URL.createObjectURL(blob);
+  // ---------- export / import (Excel .xlsx) ----------
+  async downloadFile(url: string, fallbackName: string) {
+    const res = await fetch(url);
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j.error || "Gagal mengunduh berkas.");
+    }
+    const disp = res.headers.get("Content-Disposition") || "";
+    const m = disp.match(/filename="?([^"]+)"?/);
+    const name = m ? m[1] : fallbackName;
+    const blob = await res.blob();
+    const href = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
+    a.href = href;
     a.download = name;
     document.body.appendChild(a);
     a.click();
     a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    setTimeout(() => URL.revokeObjectURL(href), 1500);
   }
-  exportCsv() {
-    const esc = (v: unknown) => {
-      const s = v == null ? "" : String(v);
-      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-    };
-    const head = [
-      "Rencana Kinerja",
-      "Tanggal Mulai",
-      "Tanggal Selesai",
-      "Jam Mulai",
-      "Jam Selesai",
-      "Kegiatan",
-      "Capaian",
-      "Bukti Dukung",
-    ];
-    const rows = this.getFiltered().map((a) => {
-      const c = catById(this.state.categories, a.categoryId);
-      const ev = (a.evidence || [])
-        .map((e) => (e.type === "link" ? e.url : "[gambar] " + (e.name || "")))
-        .join(" | ");
-      return [c ? c.name : "", a.startDate, a.endDate, a.startTime, a.endTime, a.title, a.capaian, ev]
-        .map(esc)
-        .join(",");
-    });
-    const csv = [head.join(","), ...rows].join("\r\n");
-    // Prepend a UTF-8 BOM so Excel opens the file with correct encoding.
-    this.download("jurnal-kegiatan.csv", "﻿" + csv, "text/csv;charset=utf-8");
-    this.flash("Spreadsheet (CSV) diunduh");
+  exportExcel() {
+    this.setState({ sidebarOpen: false });
+    this.flash("Menyiapkan file Excel…");
+    this.downloadFile("/api/export", "jurnal-kegiatan.xlsx")
+      .then(() => this.flash("File Excel diunduh"))
+      .catch((err) => this.flash(err.message || "Gagal mengekspor"));
   }
-  exportJson() {
-    const { activities, categories } = this.state;
-    this.download(
-      "jurnal-kegiatan.json",
-      JSON.stringify({ activities, categories, exportedAt: new Date().toISOString() }, null, 2),
-      "application/json",
-    );
-    this.flash("Data (JSON) diunduh");
+  downloadTemplate() {
+    this.setState({ sidebarOpen: false });
+    this.flash("Menyiapkan template…");
+    this.downloadFile("/api/template", "template-jurnal-kegiatan.xlsx")
+      .then(() => this.flash("Template diunduh"))
+      .catch((err) => this.flash(err.message || "Gagal mengunduh template"));
   }
-  importJson(e: React.ChangeEvent<HTMLInputElement>) {
+  importExcel(e: React.ChangeEvent<HTMLInputElement>) {
     const file = (e.target.files || [])[0];
     e.target.value = "";
     if (!file) return;
-    const rd = new FileReader();
-    rd.onload = () => {
-      try {
-        const d = JSON.parse(rd.result as string);
-        if (Array.isArray(d.activities) && Array.isArray(d.categories)) {
-          this.commitData({ activities: d.activities, categories: d.categories, sidebarOpen: false }, () =>
-            this.flash("Data berhasil diimpor"),
-          );
-        } else this.flash("Format file tidak dikenali");
-      } catch {
-        this.flash("Gagal membaca file");
-      }
-    };
-    rd.readAsText(file);
+    if (!/\.xlsx$/i.test(file.name)) {
+      this.flash("Format harus .xlsx (Excel)");
+      return;
+    }
+    if (
+      !window.confirm(
+        "Impor Excel akan MENGGABUNGKAN data: baris dengan ID yang cocok " +
+          "diperbarui, baris baru ditambahkan. Data yang ada tidak dihapus. Lanjutkan?",
+      )
+    )
+      return;
+    this.setState({ sidebarOpen: false });
+    this.flash("Mengimpor…");
+    const fd = new FormData();
+    fd.append("file", file);
+    fetch("/api/import", { method: "POST", body: fd })
+      .then(async (r) => {
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || "Gagal mengimpor.");
+        return j as { data: { activities: Activity[]; categories: Category[] }; counts: { activities: number } };
+      })
+      .then((j) => {
+        // Server already persisted the merge — update local state directly.
+        this.setState({ activities: j.data.activities, categories: j.data.categories });
+        this.flash(`Impor selesai — ${j.counts.activities} kegiatan`);
+      })
+      .catch((err) => this.flash(err.message || "Gagal mengimpor"));
   }
 
   // ---------- share ----------
@@ -1043,12 +1047,12 @@ export default class JurnalApp extends React.Component<{}, State> {
               <div style={{ padding: "8px 10px", overflow: "auto", flex: 1 }}>{this.renderNav(false)}</div>
               <div style={{ padding: 10, borderTop: "1px solid var(--sep)", display: "flex", flexDirection: "column", gap: 1 }}>
                 <button onClick={() => this.openCatMgr()} style={sideFootBtn}>Kelola Rencana Kinerja</button>
-                <button onClick={() => this.exportCsv()} style={sideFootBtn}>Export Spreadsheet (CSV)</button>
-                <button onClick={() => this.exportJson()} style={sideFootBtn}>Export Data (JSON)</button>
+                <button onClick={() => this.exportExcel()} style={sideFootBtn}>Export Excel (.xlsx)</button>
                 <label style={{ ...sideFootBtn, display: "block" }}>
-                  Import Data (JSON)
-                  <input type="file" accept="application/json,.json" onChange={(e) => this.importJson(e)} style={{ display: "none" }} />
+                  Import Excel (.xlsx)
+                  <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(e) => this.importExcel(e)} style={{ display: "none" }} />
                 </label>
+                <button onClick={() => this.downloadTemplate()} style={sideFootBtn}>Unduh Template Excel</button>
                 <button onClick={() => this.toggleTheme()} style={sideFootBtn}>{s.theme === "dark" ? "Mode Terang" : "Mode Gelap"}</button>
               </div>
             </aside>
@@ -1122,12 +1126,12 @@ export default class JurnalApp extends React.Component<{}, State> {
               <div style={{ padding: "8px 10px", overflow: "auto", flex: 1 }}>{this.renderNav(true)}</div>
               <div style={{ padding: 10, borderTop: "1px solid var(--sep)", display: "flex", flexDirection: "column", gap: 1 }}>
                 <button onClick={() => this.openCatMgr()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Kelola Rencana Kinerja</button>
-                <button onClick={() => this.exportCsv()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Export Spreadsheet (CSV)</button>
-                <button onClick={() => this.exportJson()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Export Data (JSON)</button>
+                <button onClick={() => this.exportExcel()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Export Excel (.xlsx)</button>
                 <label style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px", display: "block" }}>
-                  Import Data (JSON)
-                  <input type="file" accept="application/json,.json" onChange={(e) => this.importJson(e)} style={{ display: "none" }} />
+                  Import Excel (.xlsx)
+                  <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(e) => this.importExcel(e)} style={{ display: "none" }} />
                 </label>
+                <button onClick={() => this.downloadTemplate()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Unduh Template Excel</button>
               </div>
             </aside>
           </div>
@@ -1337,17 +1341,11 @@ export default class JurnalApp extends React.Component<{}, State> {
                 <label style={fieldLabel}>Rencana Kinerja</label>
                 <button onClick={() => this.openCatMgr()} style={{ border: "none", background: "transparent", color: "var(--accent)", fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: 0 }}>Kelola</button>
               </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, maxHeight: 150, overflow: "auto", padding: 1 }}>
-                {s.categories.map((c) => {
-                  const active = f.categoryId === c.id;
-                  return (
-                    <button key={c.id} onClick={() => this.setForm({ categoryId: c.id })} style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "8px 13px", borderRadius: 11, cursor: "pointer", fontSize: 14, whiteSpace: "nowrap", transition: "all .12s ease", ...(active ? { background: "var(--accent-soft)", border: "1.5px solid var(--accent)", color: "var(--accent)", fontWeight: 640 } : { background: "var(--bg)", border: "1px solid var(--sep-2)", color: "var(--text)", fontWeight: 500 }) }}>
-                      <span style={{ width: 9, height: 9, borderRadius: 3, flex: "none", background: c.color }} />
-                      {c.name}
-                    </button>
-                  );
-                })}
-              </div>
+              <CategorySelect
+                categories={s.categories}
+                value={f.categoryId}
+                onChange={(id) => this.setForm({ categoryId: id })}
+              />
             </div>
 
             {/* Tanggal */}
@@ -1415,7 +1413,7 @@ export default class JurnalApp extends React.Component<{}, State> {
                   {f.evidence.map((ev) => (
                     <div key={ev.id} style={{ display: "flex", alignItems: "center", gap: 11, padding: "8px 10px", border: "1px solid var(--sep)", borderRadius: 11, background: "var(--surface-2)" }}>
                       {ev.type === "image" ? (
-                        <span style={{ width: 42, height: 42, borderRadius: 8, flex: "none", backgroundColor: "var(--fill)", backgroundSize: "cover", backgroundPosition: "center", backgroundImage: `url('/api/image/${encodeURIComponent(ev.fileId)}')` }} />
+                        <span style={{ width: 42, height: 42, borderRadius: 8, flex: "none", backgroundColor: "var(--fill)", backgroundSize: "cover", backgroundPosition: "center", backgroundImage: `url('${imageUrl(ev)}')` }} />
                       ) : (
                         <span style={{ width: 42, height: 42, borderRadius: 8, background: "var(--accent-soft)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", flex: "none", fontSize: 17 }}>↗</span>
                       )}

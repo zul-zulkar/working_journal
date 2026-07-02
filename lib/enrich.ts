@@ -43,7 +43,7 @@ export function enrichActivity(
   const ev = a.evidence || [];
   const images = ev.filter((e) => e.type === "image");
   const links = ev.filter((e) => e.type === "link");
-  const imgUrls = images.map((x) => imageUrl(x.fileId));
+  const imgUrls = images.map((x) => imageUrl(x));
   const isRange = !!(a.endDate && a.endDate !== a.startDate);
 
   return {

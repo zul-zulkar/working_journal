@@ -10,6 +10,13 @@ import { google } from "googleapis";
 //      base64 encoding (handy for single-line env vars on Vercel).
 //   2. GOOGLE_CLIENT_EMAIL + GOOGLE_PRIVATE_KEY  — the two fields separately.
 //      (\n escape sequences in the private key are normalised to real newlines.)
+//
+// Drive uploads use a *separate* OAuth2 credential (impersonating a real Google
+// account) instead of the service account: service accounts have zero storage
+// quota, so `drive.files.create` fails on a personal (non-Workspace) Drive with
+// "Service Accounts do not have storage quota". Run `node scripts/get-drive-token.js`
+// once to obtain GOOGLE_OAUTH_REFRESH_TOKEN. If the OAuth vars are absent, Drive
+// falls back to the service account (fine if your folder lives on a Shared Drive).
 
 const SCOPES = [
   "https://www.googleapis.com/auth/spreadsheets",
@@ -75,12 +82,34 @@ function getAuth() {
   return authClient;
 }
 
+type OAuthCreds = { client_id: string; client_secret: string; refresh_token: string };
+
+function readOAuthCreds(): OAuthCreds | null {
+  const client_id = process.env.GOOGLE_OAUTH_CLIENT_ID;
+  const client_secret = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+  const refresh_token = process.env.GOOGLE_OAUTH_REFRESH_TOKEN;
+  if (!client_id || !client_secret || !refresh_token) return null;
+  return { client_id, client_secret, refresh_token };
+}
+
+let driveAuthClient: InstanceType<typeof google.auth.OAuth2> | null = null;
+
+function getDriveAuth() {
+  const creds = readOAuthCreds();
+  if (!creds) return getAuth();
+  if (!driveAuthClient) {
+    driveAuthClient = new google.auth.OAuth2(creds.client_id, creds.client_secret);
+    driveAuthClient.setCredentials({ refresh_token: creds.refresh_token });
+  }
+  return driveAuthClient;
+}
+
 export function sheetsClient() {
   return google.sheets({ version: "v4", auth: getAuth() });
 }
 
 export function driveClient() {
-  return google.drive({ version: "v3", auth: getAuth() });
+  return google.drive({ version: "v3", auth: getDriveAuth() });
 }
 
 export function requireEnv(name: string): string {

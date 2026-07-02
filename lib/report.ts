@@ -1,5 +1,5 @@
 import type { JournalData } from "./types";
-import { catById, fmt, fmtDay, parseD, rangeLabel, toISO, todayISO } from "./format";
+import { catById, fmt, fmtDay, imageUrl, parseD, rangeLabel, toISO, todayISO } from "./format";
 import { ActivityItem, DayGroup, buildGroups, enrichActivity } from "./enrich";
 
 export type ReportSection = "stats" | "timeline" | "grid" | "report";
@@ -112,7 +112,7 @@ export function buildReport(data: JournalData, cfg: ShareConfig): ReportModel {
     const color = c ? c.color : "#8e8e93";
     const imgs = (a.evidence || [])
       .filter((x) => x.type === "image")
-      .map((x) => `/api/image/${encodeURIComponent((x as { fileId: string }).fileId)}`);
+      .map((x) => imageUrl(x));
     return {
       title: a.title,
       dateLabel: rangeLabel(a.startDate, a.endDate),

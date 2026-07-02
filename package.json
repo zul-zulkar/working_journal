@@ -8,9 +8,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "get-drive-token": "node scripts/get-drive-token.js"
   },
   "dependencies": {
+    "@vercel/blob": "^2.5.0",
+    "exceljs": "^4.4.0",
     "googleapis": "^140.0.1",
     "next": "^14.2.35",
     "react": "18.3.1",

@@ -4,10 +4,11 @@ Aplikasi jurnaling kegiatan kerja sebagai bukti dukung laporan SKP. Single-user.
 
 ## Tech stack
 Next.js 14+ (App Router), TypeScript, Tailwind CSS. Data via Google Sheets
-(googleapis, service account). Gambar via Google Drive (folder sama). Deploy: Vercel.
+(googleapis, service account). Gambar via Vercel Blob (CDN publik); Google Drive
+hanya fallback legacy untuk data lama. Deploy: Vercel.
 
 ## Aturan arsitektur — jangan dilanggar
-- Service account credential CUMA di server (env var), tidak pernah ke client.
+- Kredensial (service account, token Blob) CUMA di server (env var), tidak pernah ke client.
 - Client fetch lewat API routes internal (/api/*) — tidak pernah panggil Google API langsung.
 - /share/[token] harus bisa diakses publik tanpa login.
 

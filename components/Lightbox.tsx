@@ -45,6 +45,8 @@ export default function Lightbox({
         display: "flex",
         flexDirection: "column",
         animation: "jkk-fade .2s ease",
+        touchAction: "manipulation",
+        WebkitTapHighlightColor: "transparent",
       }}
     >
       <div
@@ -74,15 +76,21 @@ export default function Lightbox({
         </div>
         <button
           onClick={onClose}
+          aria-label="Tutup"
           style={{
             border: "none",
             background: "rgba(255,255,255,.15)",
             color: "#fff",
-            width: 36,
-            height: 36,
+            width: 44,
+            height: 44,
             borderRadius: "50%",
-            fontSize: 16,
+            fontSize: 18,
             cursor: "pointer",
+            flex: "none",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            WebkitTapHighlightColor: "transparent",
           }}
         >
           ✕
@@ -110,17 +118,18 @@ export default function Lightbox({
             ‹
           </button>
         )}
-        <div
-          onClick={stop}
+        {/* The <img> hugs its rendered size, so the surrounding letterbox belongs
+            to the overlay — tapping anywhere outside the picture (or on it)
+            closes. Only the nav controls below stop propagation. */}
+        <img
+          src={state.images[index]}
+          alt={state.title}
           style={{
-            width: "88vw",
-            maxWidth: 1100,
-            height: "76vh",
-            backgroundImage: `url('${state.images[index]}')`,
-            backgroundSize: "contain",
-            backgroundRepeat: "no-repeat",
-            backgroundPosition: "center",
+            maxWidth: hasMany ? "calc(100vw - 130px)" : "94vw",
+            maxHeight: "100%",
+            objectFit: "contain",
             borderRadius: 10,
+            boxShadow: "0 10px 40px rgba(0,0,0,.5)",
           }}
         />
         {hasMany && (
@@ -166,6 +175,19 @@ export default function Lightbox({
               }}
             />
           ))}
+        </div>
+      )}
+      {!hasMany && (
+        <div
+          style={{
+            padding: "12px 16px 18px",
+            textAlign: "center",
+            fontSize: 12.5,
+            color: "rgba(255,255,255,.5)",
+            flex: "none",
+          }}
+        >
+          Ketuk di luar gambar untuk menutup
         </div>
       )}
     </div>

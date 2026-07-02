@@ -8,8 +8,8 @@ import type { Activity, Category, Evidence, JournalData } from "./types";
 //   Categories : id | name | color
 //   Activities : id | categoryId | startDate | endDate | startTime | endTime |
 //                title | capaian | evidence(JSON)
-// Evidence is serialised as JSON in a single cell (small — image binaries live in
-// Drive, evidence only carries the fileId).
+// Evidence is serialised as JSON in a single cell (small — image binaries live
+// in Vercel Blob / Drive; evidence only carries the url or legacy fileId).
 
 const CAT_TAB = "Categories";
 const ACT_TAB = "Activities";

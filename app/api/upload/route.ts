@@ -1,15 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { uploadImage } from "@/lib/drive";
+import { storeImage } from "@/lib/storage";
 import { ConfigError } from "@/lib/google";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const MAX_BYTES = 8 * 1024 * 1024; // 8 MB per file (images are compressed client-side)
+// Vercel serverless caps request bodies at ~4.5 MB; images are compressed
+// client-side (max 1280 px JPEG) and uploaded one request per file.
+const MAX_BYTES = 4 * 1024 * 1024;
 
-// Accepts multipart/form-data with one or more `file` fields; uploads each to
-// Drive and returns [{ fileId, name }]. The client stores fileId as evidence and
-// renders it via /api/image/[fileId].
+// Accepts multipart/form-data with one or more `file` fields; stores each in
+// Vercel Blob (or legacy Drive fallback) and returns [{ url?, fileId?, name }].
+// The client keeps url/fileId in the evidence JSON and renders via imageUrl().
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
@@ -22,7 +24,7 @@ export async function POST(req: NextRequest) {
     for (const file of files) {
       if (file.size > MAX_BYTES) {
         return NextResponse.json(
-          { error: `Berkas "${file.name}" melebihi 8 MB.` },
+          { error: `Berkas "${file.name}" melebihi 4 MB.` },
           { status: 413 },
         );
       }
@@ -33,7 +35,7 @@ export async function POST(req: NextRequest) {
         );
       }
       const buffer = Buffer.from(await file.arrayBuffer());
-      const uploaded = await uploadImage(
+      const uploaded = await storeImage(
         buffer,
         file.type,
         file.name || "evidence.jpg",
