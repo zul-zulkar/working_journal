@@ -78,6 +78,9 @@ export default class JurnalApp extends React.Component<{}, State> {
   private onResize = () => {
     if (this.mounted) this.setState({ width: window.innerWidth });
   };
+  private onDocPaste = (e: ClipboardEvent) => {
+    if (this.state.editorOpen) this.pasteImages(e);
+  };
 
   constructor(props: {}) {
     super(props);
@@ -113,11 +116,13 @@ export default class JurnalApp extends React.Component<{}, State> {
   componentDidMount() {
     this.mounted = true;
     window.addEventListener("resize", this.onResize);
+    document.addEventListener("paste", this.onDocPaste);
     this.load();
   }
   componentWillUnmount() {
     this.mounted = false;
     window.removeEventListener("resize", this.onResize);
+    document.removeEventListener("paste", this.onDocPaste);
   }
 
   // ---------- persistence ----------
@@ -598,7 +603,7 @@ export default class JurnalApp extends React.Component<{}, State> {
       })
       .catch((err) => this.flash(err.message || "Gagal mengunggah gambar"));
   }
-  pasteImages(e: React.ClipboardEvent) {
+  pasteImages(e: ClipboardEvent) {
     const items = (e.clipboardData && e.clipboardData.items) || [];
     const files: File[] = [];
     for (let i = 0; i < items.length; i++) {
@@ -1320,7 +1325,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     const isMobile = s.width < 860;
     return (
       <div onClick={() => this.closeEditor()} style={overlay(isMobile)}>
-        <div onClick={(e) => e.stopPropagation()} onPaste={(e) => this.pasteImages(e)} style={modalCard(isMobile)}>
+        <div onClick={(e) => e.stopPropagation()} style={modalCard(isMobile)}>
           <header style={modalHeader}>
             <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-.02em", flex: 1 }}>{s.editingId ? "Ubah Kegiatan" : "Kegiatan Baru"}</h2>
             <button onClick={() => this.closeEditor()} style={closeBtn}>✕</button>
