@@ -1,19 +1,22 @@
 import "server-only";
 import { requireEnv, sheetsClient } from "./google";
 import { seedData } from "./seed";
-import type { Activity, Category, Evidence, JournalData } from "./types";
+import type { Activity, Category, Evidence, Group, JournalData } from "./types";
 
 // ── Google Sheets data access ────────────────────────────────────────────────
-// Two tabs in one spreadsheet:
-//   Categories : id | name | color
+// Three tabs in one spreadsheet:
+//   Categories : id | name | color | groupId
+//   Groups     : id | name | startDate | endDate
 //   Activities : id | categoryId | startDate | endDate | startTime | endTime |
 //                title | capaian | evidence(JSON)
 // Evidence is serialised as JSON in a single cell (small — image binaries live
 // in Vercel Blob / Drive; evidence only carries the url or legacy fileId).
 
 const CAT_TAB = "Categories";
+const GRP_TAB = "Groups";
 const ACT_TAB = "Activities";
-const CAT_HEADER = ["id", "name", "color"];
+const CAT_HEADER = ["id", "name", "color", "groupId"];
+const GRP_HEADER = ["id", "name", "startDate", "endDate"];
 const ACT_HEADER = [
   "id",
   "categoryId",
@@ -40,7 +43,7 @@ async function ensureStructure(): Promise<void> {
       .filter(Boolean) as string[],
   );
 
-  const toCreate = [CAT_TAB, ACT_TAB].filter((t) => !existing.has(t));
+  const toCreate = [CAT_TAB, GRP_TAB, ACT_TAB].filter((t) => !existing.has(t));
   if (toCreate.length) {
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: id,
@@ -56,7 +59,8 @@ async function ensureStructure(): Promise<void> {
     requestBody: {
       valueInputOption: "RAW",
       data: [
-        { range: `${CAT_TAB}!A1:C1`, values: [CAT_HEADER] },
+        { range: `${CAT_TAB}!A1:D1`, values: [CAT_HEADER] },
+        { range: `${GRP_TAB}!A1:D1`, values: [GRP_HEADER] },
         { range: `${ACT_TAB}!A1:I1`, values: [ACT_HEADER] },
       ],
     },
@@ -78,9 +82,9 @@ async function readRaw(): Promise<JournalData> {
   const id = spreadsheetId();
   const res = await sheets.spreadsheets.values.batchGet({
     spreadsheetId: id,
-    ranges: [`${CAT_TAB}!A2:C`, `${ACT_TAB}!A2:I`],
+    ranges: [`${CAT_TAB}!A2:D`, `${GRP_TAB}!A2:D`, `${ACT_TAB}!A2:I`],
   });
-  const [catRows, actRows] = res.data.valueRanges || [];
+  const [catRows, grpRows, actRows] = res.data.valueRanges || [];
 
   const categories: Category[] = (catRows?.values || [])
     .filter((r) => r && r[0])
@@ -88,6 +92,16 @@ async function readRaw(): Promise<JournalData> {
       id: String(r[0]),
       name: String(r[1] ?? ""),
       color: String(r[2] ?? "#8e8e93"),
+      groupId: r[3] ? String(r[3]) : undefined,
+    }));
+
+  const groups: Group[] = (grpRows?.values || [])
+    .filter((r) => r && r[0])
+    .map((r) => ({
+      id: String(r[0]),
+      name: String(r[1] ?? ""),
+      startDate: String(r[2] ?? ""),
+      endDate: String(r[3] ?? r[2] ?? ""),
     }));
 
   const activities: Activity[] = (actRows?.values || [])
@@ -104,7 +118,7 @@ async function readRaw(): Promise<JournalData> {
       evidence: parseEvidence(r[8] as string | undefined),
     }));
 
-  return { activities, categories };
+  return { activities, categories, groups };
 }
 
 /** Read all journal data. Seeds the sheet with sample data on first run. */
@@ -134,10 +148,23 @@ export async function saveData(data: JournalData): Promise<void> {
   // Clear existing data rows (keep headers).
   await sheets.spreadsheets.values.batchClear({
     spreadsheetId: id,
-    requestBody: { ranges: [`${CAT_TAB}!A2:C`, `${ACT_TAB}!A2:I`] },
+    requestBody: {
+      ranges: [`${CAT_TAB}!A2:D`, `${GRP_TAB}!A2:D`, `${ACT_TAB}!A2:I`],
+    },
   });
 
-  const catValues = data.categories.map((c) => [c.id, c.name, c.color]);
+  const catValues = data.categories.map((c) => [
+    c.id,
+    c.name,
+    c.color,
+    c.groupId || "",
+  ]);
+  const grpValues = (data.groups || []).map((g) => [
+    g.id,
+    g.name,
+    g.startDate,
+    g.endDate,
+  ]);
   const actValues = data.activities.map((a) => [
     a.id,
     a.categoryId,
@@ -153,6 +180,9 @@ export async function saveData(data: JournalData): Promise<void> {
   const updates: { range: string; values: unknown[][] }[] = [];
   if (catValues.length) {
     updates.push({ range: `${CAT_TAB}!A2`, values: catValues });
+  }
+  if (grpValues.length) {
+    updates.push({ range: `${GRP_TAB}!A2`, values: grpValues });
   }
   if (actValues.length) {
     updates.push({ range: `${ACT_TAB}!A2`, values: actValues });

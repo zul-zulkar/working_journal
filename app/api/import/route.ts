@@ -41,6 +41,7 @@ export async function POST(req: NextRequest) {
       counts: {
         activities: merged.activities.length,
         categories: merged.categories.length,
+        groups: merged.groups.length,
       },
     });
   } catch (err) {

@@ -1,19 +1,23 @@
 "use client";
 
 import React, { CSSProperties } from "react";
-import type { Activity, Category, Evidence } from "@/lib/types";
+import type { Activity, Category, Evidence, Group } from "@/lib/types";
 import { ActivityItem, buildGroups, enrichActivity } from "@/lib/enrich";
 import {
   PALETTE,
   catById,
+  categoriesInRange,
   fmt,
   fmtLong,
+  groupById,
   imageUrl,
   parseD,
+  rangeLabel,
   readableOn,
   toISO,
   todayISO,
   uid,
+  validateGroupRange,
 } from "@/lib/format";
 import {
   ShareConfig,
@@ -57,6 +61,7 @@ type State = {
   sort: Sort;
   activities: Activity[];
   categories: Category[];
+  groups: Group[];
   calYear: number;
   calMonth: number;
   width: number;
@@ -64,8 +69,10 @@ type State = {
   editorOpen: boolean;
   editingId: string | null;
   form: FormState | null;
-  catMgrOpen: boolean;
-  catForm: { name: string; color: string };
+  manageOpen: boolean;
+  catForm: { name: string; color: string; groupId: string };
+  groupForm: { name: string; startDate: string; endDate: string };
+  groupError: string | null;
   lightbox: LightboxState | null;
   dayView: string | null;
   shareOpen: boolean;
@@ -97,6 +104,7 @@ export default class JurnalApp extends React.Component<{}, State> {
       sort: "date-desc",
       activities: [],
       categories: [],
+      groups: [],
       calYear: today.getFullYear(),
       calMonth: today.getMonth(),
       width: typeof window !== "undefined" ? window.innerWidth : 1200,
@@ -104,8 +112,10 @@ export default class JurnalApp extends React.Component<{}, State> {
       editorOpen: false,
       editingId: null,
       form: null,
-      catMgrOpen: false,
-      catForm: { name: "", color: PALETTE[0] },
+      manageOpen: false,
+      catForm: { name: "", color: PALETTE[0], groupId: "" },
+      groupForm: { name: "", startDate: todayISO(), endDate: todayISO() },
+      groupError: null,
       lightbox: null,
       dayView: null,
       shareOpen: false,
@@ -157,6 +167,7 @@ export default class JurnalApp extends React.Component<{}, State> {
         error: null,
         activities: Array.isArray(data.activities) ? data.activities : [],
         categories: Array.isArray(data.categories) ? data.categories : [],
+        groups: Array.isArray(data.groups) ? data.groups : [],
         theme: prefs.theme || "light",
         view: prefs.view || DEFAULT_VIEW,
         sort: prefs.sort || "date-desc",
@@ -169,14 +180,15 @@ export default class JurnalApp extends React.Component<{}, State> {
       });
     }
   }
-  /** Persist activities + categories to Google Sheets (whole-document save). */
-  syncData(next?: { activities?: Activity[]; categories?: Category[] }) {
+  /** Persist activities + categories + groups to Google Sheets (whole-document save). */
+  syncData(next?: { activities?: Activity[]; categories?: Category[]; groups?: Group[] }) {
     const activities = next?.activities || this.state.activities;
     const categories = next?.categories || this.state.categories;
+    const groups = next?.groups || this.state.groups;
     fetch("/api/data", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ activities, categories }),
+      body: JSON.stringify({ activities, categories, groups }),
     })
       .then(async (r) => {
         if (!r.ok) {
@@ -429,8 +441,10 @@ export default class JurnalApp extends React.Component<{}, State> {
 
   // ---------- editor ----------
   blankForm(iso?: string): FormState {
-    const cid = this.state.categories[0] ? this.state.categories[0].id : "";
     const d = iso || todayISO();
+    // Default to the first Rencana Kinerja whose period covers this date.
+    const avail = categoriesInRange(this.state.categories, this.state.groups, d, d);
+    const cid = avail[0] ? avail[0].id : "";
     return {
       categoryId: cid,
       startDate: d,
@@ -637,13 +651,23 @@ export default class JurnalApp extends React.Component<{}, State> {
     this.setForm((ff) => ({ evidence: ff.evidence.filter((x) => x.id !== eid) }));
   }
 
-  // ---------- categories ----------
-  openCatMgr() {
-    this.setState({ catMgrOpen: true, sidebarOpen: false, catForm: { name: "", color: PALETTE[0] } });
+  // ---------- manage page (Rencana Kinerja + Periode) ----------
+  openManage() {
+    this.setState({
+      manageOpen: true,
+      sidebarOpen: false,
+      editorOpen: false,
+      catForm: { name: "", color: PALETTE[0], groupId: this.state.groups[0]?.id || "" },
+      groupForm: { name: "", startDate: todayISO(), endDate: todayISO() },
+      groupError: null,
+    });
+    if (typeof window !== "undefined") window.scrollTo(0, 0);
   }
-  closeCatMgr() {
-    this.setState({ catMgrOpen: false });
+  closeManage() {
+    this.setState({ manageOpen: false });
   }
+
+  // ---------- categories (Rencana Kinerja) ----------
   renameCat(id: string, name: string) {
     const cats = this.state.categories.map((c) => (c.id === id ? { ...c, name } : c));
     this.commitData({ categories: cats });
@@ -654,6 +678,12 @@ export default class JurnalApp extends React.Component<{}, State> {
       const i = PALETTE.indexOf(c.color);
       return { ...c, color: PALETTE[(i + 1) % PALETTE.length] };
     });
+    this.commitData({ categories: cats });
+  }
+  setCatGroup(id: string, groupId: string) {
+    const cats = this.state.categories.map((c) =>
+      c.id === id ? { ...c, groupId: groupId || undefined } : c,
+    );
     this.commitData({ categories: cats });
   }
   deleteCat(id: string) {
@@ -674,11 +704,84 @@ export default class JurnalApp extends React.Component<{}, State> {
       this.flash("Nama rencana kinerja wajib diisi");
       return;
     }
-    const cat: Category = { id: uid(), name, color: cf.color };
+    const cat: Category = {
+      id: uid(),
+      name,
+      color: cf.color,
+      groupId: cf.groupId || undefined,
+    };
     this.commitData({
       categories: [...this.state.categories, cat],
-      catForm: { name: "", color: PALETTE[(PALETTE.indexOf(cf.color) + 1) % PALETTE.length] },
+      // Keep the chosen period selected so several can be added in a row.
+      catForm: {
+        name: "",
+        color: PALETTE[(PALETTE.indexOf(cf.color) + 1) % PALETTE.length],
+        groupId: cf.groupId,
+      },
     });
+  }
+
+  // ---------- groups (Periode) ----------
+  setGroupForm(patch: Partial<State["groupForm"]>) {
+    this.setState((s) => ({
+      groupForm: { ...s.groupForm, ...patch },
+      // Recompute the error live as the user edits the range.
+      groupError: null,
+    }));
+  }
+  addGroup() {
+    const gf = this.state.groupForm;
+    const name = (gf.name || "").trim();
+    const err = validateGroupRange(this.state.groups, gf.startDate, gf.endDate, { name });
+    if (err) {
+      this.setState({ groupError: err });
+      return;
+    }
+    const group: Group = {
+      id: uid(),
+      name,
+      startDate: gf.startDate,
+      endDate: gf.endDate,
+    };
+    this.commitData(
+      {
+        groups: [...this.state.groups, group],
+        groupForm: { name: "", startDate: gf.endDate, endDate: gf.endDate },
+        groupError: null,
+      },
+      () => this.flash("Periode ditambahkan"),
+    );
+  }
+  renameGroup(id: string, name: string) {
+    const groups = this.state.groups.map((g) => (g.id === id ? { ...g, name } : g));
+    this.commitData({ groups });
+  }
+  updateGroupDates(id: string, patch: { startDate?: string; endDate?: string }) {
+    const g = this.state.groups.find((x) => x.id === id);
+    if (!g) return;
+    const startDate = patch.startDate ?? g.startDate;
+    const endDate = patch.endDate ?? g.endDate;
+    const err = validateGroupRange(this.state.groups, startDate, endDate, { excludeId: id });
+    if (err) {
+      this.flash(err);
+      return;
+    }
+    const groups = this.state.groups.map((x) =>
+      x.id === id ? { ...x, startDate, endDate } : x,
+    );
+    this.commitData({ groups });
+  }
+  deleteGroup(id: string) {
+    const assigned = this.state.categories.filter((c) => c.groupId === id).length;
+    const msg = assigned
+      ? `Hapus periode ini? ${assigned} rencana kinerja akan menjadi "Tanpa grup" dan tidak bisa dipilih sampai diberi periode lain.`
+      : "Hapus periode ini?";
+    if (!window.confirm(msg)) return;
+    const groups = this.state.groups.filter((g) => g.id !== id);
+    const categories = this.state.categories.map((c) =>
+      c.groupId === id ? { ...c, groupId: undefined } : c,
+    );
+    this.commitData({ groups, categories }, () => this.flash("Periode dihapus"));
   }
 
   // ---------- lightbox ----------
@@ -747,11 +850,18 @@ export default class JurnalApp extends React.Component<{}, State> {
       .then(async (r) => {
         const j = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(j.error || "Gagal mengimpor.");
-        return j as { data: { activities: Activity[]; categories: Category[] }; counts: { activities: number } };
+        return j as {
+          data: { activities: Activity[]; categories: Category[]; groups: Group[] };
+          counts: { activities: number };
+        };
       })
       .then((j) => {
         // Server already persisted the merge — update local state directly.
-        this.setState({ activities: j.data.activities, categories: j.data.categories });
+        this.setState({
+          activities: j.data.activities,
+          categories: j.data.categories,
+          groups: Array.isArray(j.data.groups) ? j.data.groups : this.state.groups,
+        });
         this.flash(`Impor selesai — ${j.counts.activities} kegiatan`);
       })
       .catch((err) => this.flash(err.message || "Gagal mengimpor"));
@@ -942,7 +1052,7 @@ export default class JurnalApp extends React.Component<{}, State> {
       return (
         <div data-theme={s.theme} style={rootStyle}>
           <ReportView
-            report={buildReport({ activities: s.activities, categories: s.categories }, s.shareCfg)}
+            report={buildReport({ activities: s.activities, categories: s.categories, groups: s.groups }, s.shareCfg)}
             onToggleTheme={() => this.toggleTheme()}
             onBack={() => this.exitReport()}
           />
@@ -955,7 +1065,7 @@ export default class JurnalApp extends React.Component<{}, State> {
       <div data-theme={s.theme} style={rootStyle}>
         {this.renderApp()}
         {s.editorOpen && this.renderEditor()}
-        {s.catMgrOpen && this.renderCatMgr()}
+        {s.manageOpen && this.renderManage()}
         {s.shareOpen && this.renderShare()}
         {s.dayView && this.renderDay()}
         {s.lightbox && <Lightbox state={s.lightbox} onClose={() => this.lbClose()} />}
@@ -992,8 +1102,24 @@ export default class JurnalApp extends React.Component<{}, State> {
   }
 
   // ---------- sidebar (shared markup for desktop + mobile sheet) ----------
+  renderCatNavButton(c: Category) {
+    const s = this.state;
+    const count = s.activities.filter((a) => a.categoryId === c.id).length;
+    return (
+      <button key={c.id} onClick={() => this.setFilter(c.id)} style={this.sideStyle(s.filterCat === c.id)}>
+        <span style={{ width: 11, height: 11, borderRadius: 3, flex: "none", background: c.color }} />
+        <span style={{ flex: 1, textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</span>
+        <span style={{ color: "var(--text-3)", fontSize: 13, fontVariantNumeric: "tabular-nums" }}>{count}</span>
+      </button>
+    );
+  }
   renderNav(isSheet: boolean) {
     const s = this.state;
+    // Order groups by start date; ungrouped categories go in their own section.
+    const orderedGroups = s.groups
+      .slice()
+      .sort((a, b) => (a.startDate < b.startDate ? -1 : a.startDate > b.startDate ? 1 : 0));
+    const ungrouped = s.categories.filter((c) => !c.groupId || !groupById(s.groups, c.groupId));
     return (
       <>
         <button
@@ -1006,20 +1132,32 @@ export default class JurnalApp extends React.Component<{}, State> {
         </button>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 8px 6px" }}>
           <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: ".05em" }}>Rencana Kinerja</span>
-          {!isSheet && (
-            <button onClick={() => this.openCatMgr()} title="Kelola" style={{ border: "none", background: "transparent", color: "var(--accent)", fontSize: 19, lineHeight: 1, cursor: "pointer", padding: "0 4px" }}>＋</button>
-          )}
+          <button onClick={() => this.openManage()} title="Kelola" style={{ border: "none", background: "transparent", color: "var(--accent)", fontSize: 19, lineHeight: 1, cursor: "pointer", padding: "0 4px" }}>＋</button>
         </div>
-        {s.categories.map((c) => {
-          const count = s.activities.filter((a) => a.categoryId === c.id).length;
+        {orderedGroups.map((g) => {
+          const cats = s.categories.filter((c) => c.groupId === g.id);
           return (
-            <button key={c.id} onClick={() => this.setFilter(c.id)} style={this.sideStyle(s.filterCat === c.id)}>
-              <span style={{ width: 11, height: 11, borderRadius: 3, flex: "none", background: c.color }} />
-              <span style={{ flex: 1, textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</span>
-              <span style={{ color: "var(--text-3)", fontSize: 13, fontVariantNumeric: "tabular-nums" }}>{count}</span>
-            </button>
+            <div key={g.id} style={{ marginBottom: 2 }}>
+              <div style={{ padding: "8px 10px 3px", display: "flex", flexDirection: "column", gap: 1 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.name}</span>
+                <span style={{ fontSize: 10.5, color: "var(--text-3)" }}>{rangeLabel(g.startDate, g.endDate)}</span>
+              </div>
+              {cats.length ? (
+                cats.map((c) => this.renderCatNavButton(c))
+              ) : (
+                <div style={{ padding: "3px 10px 6px", fontSize: 11.5, color: "var(--text-3)", fontStyle: "italic" }}>Belum ada rencana kinerja</div>
+              )}
+            </div>
           );
         })}
+        {ungrouped.length > 0 && (
+          <div style={{ marginBottom: 2 }}>
+            <div style={{ padding: "8px 10px 3px" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-3)" }}>Tanpa periode</span>
+            </div>
+            {ungrouped.map((c) => this.renderCatNavButton(c))}
+          </div>
+        )}
       </>
     );
   }
@@ -1046,7 +1184,7 @@ export default class JurnalApp extends React.Component<{}, State> {
               </div>
               <div style={{ padding: "8px 10px", overflow: "auto", flex: 1 }}>{this.renderNav(false)}</div>
               <div style={{ padding: 10, borderTop: "1px solid var(--sep)", display: "flex", flexDirection: "column", gap: 1 }}>
-                <button onClick={() => this.openCatMgr()} style={sideFootBtn}>Kelola Rencana Kinerja</button>
+                <button onClick={() => this.openManage()} style={sideFootBtn}>Kelola Rencana Kinerja & Periode</button>
                 <button onClick={() => this.exportExcel()} style={sideFootBtn}>Export Excel (.xlsx)</button>
                 <label style={{ ...sideFootBtn, display: "block" }}>
                   Import Excel (.xlsx)
@@ -1125,7 +1263,7 @@ export default class JurnalApp extends React.Component<{}, State> {
               </div>
               <div style={{ padding: "8px 10px", overflow: "auto", flex: 1 }}>{this.renderNav(true)}</div>
               <div style={{ padding: 10, borderTop: "1px solid var(--sep)", display: "flex", flexDirection: "column", gap: 1 }}>
-                <button onClick={() => this.openCatMgr()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Kelola Rencana Kinerja</button>
+                <button onClick={() => this.openManage()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Kelola Rencana Kinerja & Periode</button>
                 <button onClick={() => this.exportExcel()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Export Excel (.xlsx)</button>
                 <label style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px", display: "block" }}>
                   Import Excel (.xlsx)
@@ -1327,6 +1465,9 @@ export default class JurnalApp extends React.Component<{}, State> {
     const f = s.form;
     if (!f) return null;
     const isMobile = s.width < 860;
+    // Rencana Kinerja selectable for this activity depend on its date range.
+    const rangeEnd = f.isRange ? f.endDate : f.startDate;
+    const availableCats = categoriesInRange(s.categories, s.groups, f.startDate, rangeEnd);
     return (
       <div onClick={() => this.closeEditor()} style={overlay(isMobile)}>
         <div onClick={(e) => e.stopPropagation()} style={modalCard(isMobile)}>
@@ -1335,16 +1476,22 @@ export default class JurnalApp extends React.Component<{}, State> {
             <button onClick={() => this.closeEditor()} style={closeBtn}>✕</button>
           </header>
           <div style={{ padding: 20, overflow: "auto", flex: 1 }}>
-            {/* Rencana Kinerja */}
+            {/* Rencana Kinerja — daftar bergantung pada tanggal kegiatan */}
             <div style={{ marginBottom: 17 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 0 8px" }}>
                 <label style={fieldLabel}>Rencana Kinerja</label>
-                <button onClick={() => this.openCatMgr()} style={{ border: "none", background: "transparent", color: "var(--accent)", fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: 0 }}>Kelola</button>
+                <button onClick={() => this.openManage()} style={{ border: "none", background: "transparent", color: "var(--accent)", fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: 0 }}>Kelola</button>
               </div>
               <CategorySelect
-                categories={s.categories}
+                categories={availableCats}
+                allCategories={s.categories}
                 value={f.categoryId}
                 onChange={(id) => this.setForm({ categoryId: id })}
+                emptyHint={
+                  s.groups.length === 0
+                    ? "Belum ada periode. Buat periode & tetapkan rencana kinerja di halaman Kelola terlebih dahulu."
+                    : "Tidak ada rencana kinerja untuk tanggal ini. Sesuaikan tanggal, atau tetapkan rencana kinerja ke periode yang mencakup tanggal ini di halaman Kelola."
+                }
               />
             </div>
 
@@ -1440,48 +1587,153 @@ export default class JurnalApp extends React.Component<{}, State> {
     );
   }
 
-  // ---------- KELOLA RENCANA KINERJA ----------
-  renderCatMgr() {
-    const s = this.state;
-    const isMobile = s.width < 860;
+  // ---------- KELOLA RENCANA KINERJA & PERIODE (full-screen page) ----------
+  groupOptions() {
     return (
-      <div onClick={() => this.closeCatMgr()} style={overlay(isMobile)}>
-        <div onClick={(e) => e.stopPropagation()} style={modalCard(isMobile)}>
-          <header style={modalHeader}>
-            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-.02em", flex: 1 }}>Rencana Kinerja</h2>
-            <button onClick={() => this.closeCatMgr()} style={closeBtn}>✕</button>
-          </header>
-          <div style={{ padding: "16px 20px", overflow: "auto", flex: 1 }}>
-            <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--text-3)" }}>Kelompokkan kegiatan berdasarkan rencana kinerja. Ketuk kotak warna untuk mengganti warna.</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
-              {s.categories.map((c) => {
-                const count = s.activities.filter((a) => a.categoryId === c.id).length;
+      <>
+        <option value="">Tanpa periode</option>
+        {this.state.groups
+          .slice()
+          .sort((a, b) => (a.startDate < b.startDate ? -1 : a.startDate > b.startDate ? 1 : 0))
+          .map((g) => (
+            <option key={g.id} value={g.id}>
+              {g.name}
+            </option>
+          ))}
+      </>
+    );
+  }
+  renderManage() {
+    const s = this.state;
+    const gf = s.groupForm;
+    const cf = s.catForm;
+    const orderedGroups = s.groups
+      .slice()
+      .sort((a, b) => (a.startDate < b.startDate ? -1 : a.startDate > b.startDate ? 1 : 0));
+    return (
+      <div style={{ position: "fixed", inset: 0, zIndex: 55, background: "var(--bg)", overflow: "auto", animation: "jkk-fade .25s ease" }}>
+        <div style={{ position: "sticky", top: 0, zIndex: 5, display: "flex", alignItems: "center", gap: 12, padding: "12px clamp(14px,4vw,26px)", background: "var(--surface)", borderBottom: "1px solid var(--sep)", backdropFilter: "saturate(180%) blur(20px)" }}>
+          <button onClick={() => this.closeManage()} style={backBtn}>‹ Kembali</button>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 16, fontWeight: 720, letterSpacing: "-.02em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Kelola Rencana Kinerja & Periode</div>
+            <div style={{ fontSize: 12.5, color: "var(--text-3)" }}>{s.groups.length} periode · {s.categories.length} rencana kinerja</div>
+          </div>
+        </div>
+
+        <div style={{ maxWidth: 860, margin: "0 auto", padding: "clamp(16px,3vw,28px)", display: "flex", flexDirection: "column", gap: 30 }}>
+          {/* ── PERIODE / GRUP ─────────────────────────────────────────── */}
+          <section>
+            <h3 style={{ margin: "0 0 4px", fontSize: 17, fontWeight: 720, letterSpacing: "-.015em" }}>Periode / Grup</h3>
+            <p style={{ margin: "0 0 16px", fontSize: 13.5, color: "var(--text-2)", lineHeight: 1.55 }}>
+              Kelompokkan Rencana Kinerja ke dalam periode dengan rentang tanggal (mis. Semester I/II).
+              Saat menambah kegiatan, hanya Rencana Kinerja yang periodenya mencakup tanggal kegiatan yang bisa dipilih.
+              <b> Rentang antar-periode tidak boleh tumpang tindih.</b>
+            </p>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 18 }}>
+              {orderedGroups.length === 0 && (
+                <div style={{ padding: "14px 16px", border: "1px dashed var(--sep-2)", borderRadius: 12, color: "var(--text-3)", fontSize: 13.5 }}>
+                  Belum ada periode. Tambahkan periode pertama di bawah.
+                </div>
+              )}
+              {orderedGroups.map((g) => {
+                const catCount = s.categories.filter((c) => c.groupId === g.id).length;
                 return (
-                  <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 11, padding: "8px 10px", border: "1px solid var(--sep)", borderRadius: 12, background: "var(--surface-2)" }}>
-                    <button onClick={() => this.cycleColor(c.id)} title="Ganti warna" style={{ width: 24, height: 24, borderRadius: 7, border: "none", cursor: "pointer", flex: "none", background: c.color }} />
-                    <input value={c.name} onChange={(e) => this.renameCat(c.id, e.target.value)} style={{ flex: 1, minWidth: 0, border: "none", background: "transparent", color: "var(--text)", fontSize: 14.5, fontWeight: 560, outline: "none" }} />
-                    <span style={{ fontSize: 12, color: "var(--text-3)", flex: "none" }}>{count} keg.</span>
-                    <button onClick={() => this.deleteCat(c.id)} style={{ border: "none", background: "var(--fill)", color: "var(--text-2)", width: 28, height: 28, borderRadius: "50%", fontSize: 13, cursor: "pointer", flex: "none" }}>✕</button>
+                  <div key={g.id} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, padding: "12px 14px", border: "1px solid var(--sep)", borderRadius: 14, background: "var(--surface-2)" }}>
+                    <input
+                      value={g.name}
+                      onChange={(e) => this.renameGroup(g.id, e.target.value)}
+                      placeholder="Nama periode"
+                      style={{ flex: "1 1 180px", minWidth: 0, border: "none", background: "transparent", color: "var(--text)", fontSize: 15, fontWeight: 640, outline: "none" }}
+                    />
+                    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                      <input type="date" value={g.startDate} onChange={(e) => this.updateGroupDates(g.id, { startDate: e.target.value })} style={smallDateInput} />
+                      <span style={{ color: "var(--text-3)" }}>→</span>
+                      <input type="date" value={g.endDate} onChange={(e) => this.updateGroupDates(g.id, { endDate: e.target.value })} style={smallDateInput} />
+                    </div>
+                    <span style={{ fontSize: 12, color: "var(--text-3)", flex: "none" }}>{catCount} RK</span>
+                    <button onClick={() => this.deleteGroup(g.id)} title="Hapus periode" style={{ border: "none", background: "var(--fill)", color: "var(--text-2)", width: 30, height: 30, borderRadius: "50%", fontSize: 13, cursor: "pointer", flex: "none" }}>✕</button>
                   </div>
                 );
               })}
             </div>
-            <div style={{ borderTop: "1px solid var(--sep)", paddingTop: 16 }}>
-              <label style={{ ...fieldLabel, display: "block", margin: "0 0 9px" }}>Tambah rencana kinerja baru</label>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 11 }}>
+
+            <div style={{ border: "1px solid var(--sep)", borderRadius: 14, padding: 16, background: "var(--surface)" }}>
+              <label style={{ ...fieldLabel, display: "block", margin: "0 0 10px" }}>Tambah periode baru</label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+                <input
+                  value={gf.name}
+                  onChange={(e) => this.setGroupForm({ name: e.target.value })}
+                  placeholder="Nama periode (mis. Semester I 2026)"
+                  style={{ ...textInput, flex: "1 1 200px" }}
+                />
+                <input type="date" value={gf.startDate} onChange={(e) => this.setGroupForm({ startDate: e.target.value })} style={smallDateInput} />
+                <span style={{ color: "var(--text-3)" }}>→</span>
+                <input type="date" value={gf.endDate} onChange={(e) => this.setGroupForm({ endDate: e.target.value })} style={smallDateInput} />
+                <button onClick={() => this.addGroup()} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "11px 18px", fontSize: 15, fontWeight: 600, cursor: "pointer", flex: "none" }}>Tambah</button>
+              </div>
+              {s.groupError && (
+                <div style={{ marginTop: 11, padding: "9px 12px", borderRadius: 10, background: "rgba(255,59,48,.10)", color: "#FF3B30", fontSize: 13, lineHeight: 1.45 }}>
+                  {s.groupError}
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* ── RENCANA KINERJA ────────────────────────────────────────── */}
+          <section>
+            <h3 style={{ margin: "0 0 4px", fontSize: 17, fontWeight: 720, letterSpacing: "-.015em" }}>Rencana Kinerja</h3>
+            <p style={{ margin: "0 0 16px", fontSize: 13.5, color: "var(--text-2)", lineHeight: 1.55 }}>
+              Ketuk kotak warna untuk mengganti warna. Tetapkan setiap Rencana Kinerja ke sebuah periode agar bisa dipilih saat mencatat kegiatan.
+            </p>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 18 }}>
+              {s.categories.length === 0 && (
+                <div style={{ padding: "14px 16px", border: "1px dashed var(--sep-2)", borderRadius: 12, color: "var(--text-3)", fontSize: 13.5 }}>
+                  Belum ada rencana kinerja. Tambahkan di bawah.
+                </div>
+              )}
+              {s.categories.map((c) => {
+                const count = s.activities.filter((a) => a.categoryId === c.id).length;
+                const noGroup = !c.groupId || !groupById(s.groups, c.groupId);
+                return (
+                  <div key={c.id} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 11, padding: "12px 14px", border: "1px solid var(--sep)", borderRadius: 14, background: "var(--surface-2)", borderLeft: `3px solid ${noGroup ? "#FF9F0A" : c.color}` }}>
+                    <button onClick={() => this.cycleColor(c.id)} title="Ganti warna" style={{ width: 24, height: 24, borderRadius: 7, border: "none", cursor: "pointer", flex: "none", background: c.color }} />
+                    <input value={c.name} onChange={(e) => this.renameCat(c.id, e.target.value)} style={{ flex: "1 1 160px", minWidth: 0, border: "none", background: "transparent", color: "var(--text)", fontSize: 14.5, fontWeight: 560, outline: "none" }} />
+                    <select
+                      value={c.groupId && groupById(s.groups, c.groupId) ? c.groupId : ""}
+                      onChange={(e) => this.setCatGroup(c.id, e.target.value)}
+                      title={noGroup ? "Belum ada periode — pilih agar bisa dipilih saat mencatat kegiatan" : "Periode"}
+                      style={{ ...selectInput, flex: "0 1 200px", borderColor: noGroup ? "#FF9F0A" : "var(--sep-2)" }}
+                    >
+                      {this.groupOptions()}
+                    </select>
+                    <span style={{ fontSize: 12, color: "var(--text-3)", flex: "none" }}>{count} keg.</span>
+                    <button onClick={() => this.deleteCat(c.id)} title="Hapus rencana kinerja" style={{ border: "none", background: "var(--fill)", color: "var(--text-2)", width: 30, height: 30, borderRadius: "50%", fontSize: 13, cursor: "pointer", flex: "none" }}>✕</button>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ border: "1px solid var(--sep)", borderRadius: 14, padding: 16, background: "var(--surface)" }}>
+              <label style={{ ...fieldLabel, display: "block", margin: "0 0 10px" }}>Tambah rencana kinerja baru</label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 12 }}>
                 {PALETTE.map((col) => {
-                  const sel = s.catForm.color === col;
+                  const sel = cf.color === col;
                   return (
                     <button key={col} onClick={() => this.setState({ catForm: { ...this.state.catForm, color: col } })} style={{ width: 28, height: 28, borderRadius: 8, cursor: "pointer", background: col, border: `2px solid ${sel ? "var(--text)" : "transparent"}`, boxShadow: sel ? "inset 0 0 0 2px var(--surface)" : "none" }} />
                   );
                 })}
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <input value={s.catForm.name} onChange={(e) => this.setState({ catForm: { ...this.state.catForm, name: e.target.value } })} placeholder="Nama rencana kinerja" style={textInput} />
-                <button onClick={() => this.addCat()} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "0 18px", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Tambah</button>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                <input value={cf.name} onChange={(e) => this.setState({ catForm: { ...this.state.catForm, name: e.target.value } })} placeholder="Nama rencana kinerja" style={{ ...textInput, flex: "1 1 200px" }} />
+                <select value={cf.groupId} onChange={(e) => this.setState({ catForm: { ...this.state.catForm, groupId: e.target.value } })} style={{ ...selectInput, flex: "0 1 200px" }}>
+                  {this.groupOptions()}
+                </select>
+                <button onClick={() => this.addCat()} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "11px 18px", fontSize: 15, fontWeight: 600, cursor: "pointer", flex: "none" }}>Tambah</button>
               </div>
             </div>
-          </div>
+          </section>
         </div>
       </div>
     );
@@ -1493,7 +1745,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     const cfg = s.shareCfg;
     if (!cfg) return null;
     const isMobile = s.width < 860;
-    const n = actsInRange({ activities: s.activities, categories: s.categories }, cfg).length;
+    const n = actsInRange({ activities: s.activities, categories: s.categories, groups: s.groups }, cfg).length;
     const url = this.shareUrl(cfg);
     return (
       <div onClick={() => this.closeShare()} style={overlay(isMobile)}>
@@ -1709,6 +1961,27 @@ const dateInput: CSSProperties = {
   background: "var(--bg)",
   color: "var(--text)",
   fontSize: 15,
+  outline: "none",
+};
+const smallDateInput: CSSProperties = {
+  padding: "9px 10px",
+  borderRadius: 10,
+  border: "1px solid var(--sep-2)",
+  background: "var(--bg)",
+  color: "var(--text)",
+  fontSize: 13.5,
+  outline: "none",
+  flex: "none",
+};
+const selectInput: CSSProperties = {
+  minWidth: 0,
+  padding: "9px 10px",
+  borderRadius: 10,
+  border: "1px solid var(--sep-2)",
+  background: "var(--bg)",
+  color: "var(--text)",
+  fontSize: 13.5,
+  cursor: "pointer",
   outline: "none",
 };
 const toggleRow: CSSProperties = {

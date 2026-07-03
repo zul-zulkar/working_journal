@@ -26,6 +26,26 @@ export type Category = {
   id: string;
   name: string;
   color: string;
+  /**
+   * Group (periode) this Rencana Kinerja belongs to. A Rencana Kinerja is only
+   * selectable for an activity whose date falls inside its group's date range.
+   * Empty/undefined = ungrouped (hidden from the activity editor until assigned).
+   */
+  groupId?: string;
+};
+
+/**
+ * A date-bounded grouping of Rencana Kinerja (mis. periode SKP: Semester I/II).
+ * Group ranges must not overlap — each date maps to at most one group, so an
+ * activity's date deterministically selects which Rencana Kinerja are available.
+ */
+export type Group = {
+  id: string;
+  name: string;
+  /** ISO date yyyy-mm-dd */
+  startDate: string;
+  /** ISO date yyyy-mm-dd */
+  endDate: string;
 };
 
 export type Activity = {
@@ -47,4 +67,5 @@ export type Activity = {
 export type JournalData = {
   activities: Activity[];
   categories: Category[];
+  groups: Group[];
 };

@@ -1,4 +1,4 @@
-import type { Activity, Category, JournalData } from "./types";
+import type { Activity, Category, Group, JournalData } from "./types";
 
 // Sample content ported from the prototype's seed() so a fresh sheet shows the
 // same starter data the design was mocked up with. Used only when both tabs are
@@ -24,10 +24,22 @@ function sid(): string {
 }
 
 export function seedData(): JournalData {
+  // One periode covering all sample activities so the seeded data is usable out
+  // of the box (Rencana Kinerja are only selectable inside a group's date range).
+  // The user can split this into semesters via the management page.
+  const group: Group = {
+    id: sid(),
+    name: "SKP Tahun 2026",
+    startDate: "2026-01-01",
+    endDate: "2026-12-31",
+  };
+  const groups: Group[] = [group];
+
   const cat = (name: string, ci: number): Category => ({
     id: sid(),
     name,
     color: PAL[ci],
+    groupId: group.id,
   });
   const cats: Category[] = [
     cat("Penyusunan Laporan", 0),
@@ -153,5 +165,5 @@ export function seedData(): JournalData {
     ),
   ];
 
-  return { activities, categories: cats };
+  return { activities, categories: cats, groups };
 }

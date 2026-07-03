@@ -1,4 +1,4 @@
-import type { Activity, Category } from "./types";
+import type { Activity, Category, Group } from "./types";
 
 // Framework-agnostic helpers ported from the prototype. Safe on server + client.
 
@@ -84,6 +84,92 @@ export function catById(
   id: string,
 ): Category | undefined {
   return categories.find((c) => c.id === id);
+}
+
+// ── Grouping by date range (periode) ─────────────────────────────────────────
+// ISO yyyy-mm-dd strings compare correctly with < / >, so date-range maths is
+// plain string comparison — no Date objects, no timezone drift.
+
+/** Do the inclusive ranges [aStart,aEnd] and [bStart,bEnd] share any day? */
+export function rangesOverlap(
+  aStart: string,
+  aEnd: string,
+  bStart: string,
+  bEnd: string,
+): boolean {
+  return aStart <= bEnd && aEnd >= bStart;
+}
+
+export function groupById(
+  groups: Group[],
+  id: string | undefined,
+): Group | undefined {
+  if (!id) return undefined;
+  return groups.find((g) => g.id === id);
+}
+
+/**
+ * First existing group whose range overlaps [startDate,endDate]. Used to reject
+ * a new/edited group that would collide (groups must stay non-overlapping).
+ * `excludeId` skips the group being edited so it doesn't clash with itself.
+ */
+export function overlappingGroup(
+  groups: Group[],
+  startDate: string,
+  endDate: string,
+  excludeId?: string,
+): Group | undefined {
+  return groups.find(
+    (g) =>
+      g.id !== excludeId &&
+      rangesOverlap(g.startDate, g.endDate, startDate, endDate),
+  );
+}
+
+/**
+ * Validate a group's date range. Returns an error message (Indonesian) or null.
+ * `name` optional so it can validate inline date edits too.
+ */
+export function validateGroupRange(
+  groups: Group[],
+  startDate: string,
+  endDate: string,
+  opts?: { name?: string; excludeId?: string },
+): string | null {
+  if (opts && opts.name !== undefined && !opts.name.trim()) {
+    return "Nama periode wajib diisi.";
+  }
+  if (!startDate || !endDate) return "Tanggal mulai dan selesai wajib diisi.";
+  if (endDate < startDate)
+    return "Tanggal selesai tidak boleh sebelum tanggal mulai.";
+  const clash = overlappingGroup(groups, startDate, endDate, opts?.excludeId);
+  if (clash) {
+    return `Rentang tanggal beririsan dengan periode "${clash.name}" (${rangeLabel(
+      clash.startDate,
+      clash.endDate,
+    )}). Antar-periode tidak boleh tumpang tindih.`;
+  }
+  return null;
+}
+
+/**
+ * Rencana Kinerja selectable for an activity spanning [startDate,endDate]: those
+ * whose group's range overlaps it. Ungrouped ones are hidden (per app rule).
+ */
+export function categoriesInRange(
+  categories: Category[],
+  groups: Group[],
+  startDate: string,
+  endDate: string,
+): Category[] {
+  if (!startDate) return [];
+  const end = endDate && endDate >= startDate ? endDate : startDate;
+  const okGroupIds = new Set(
+    groups
+      .filter((g) => rangesOverlap(g.startDate, g.endDate, startDate, end))
+      .map((g) => g.id),
+  );
+  return categories.filter((c) => c.groupId && okGroupIds.has(c.groupId));
 }
 
 /** Pick black/white text for legibility on a hex background. */

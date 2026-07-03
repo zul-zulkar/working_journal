@@ -14,12 +14,15 @@ const XLSX_TYPE =
 export async function GET() {
   try {
     let categories = [] as Awaited<ReturnType<typeof getDataReadOnly>>["categories"];
+    let groups = [] as Awaited<ReturnType<typeof getDataReadOnly>>["groups"];
     try {
-      categories = (await getDataReadOnly()).categories;
+      const data = await getDataReadOnly();
+      categories = data.categories;
+      groups = data.groups;
     } catch {
-      // Fall back to built-in example categories if Sheets isn't reachable.
+      // Fall back to built-in example categories/period if Sheets isn't reachable.
     }
-    const buffer = await buildTemplateWorkbook(categories);
+    const buffer = await buildTemplateWorkbook(categories, groups);
     return new NextResponse(buffer as unknown as BodyInit, {
       status: 200,
       headers: {

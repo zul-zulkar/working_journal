@@ -1,21 +1,24 @@
 import "server-only";
 import ExcelJS from "exceljs";
-import type { Activity, Category, Evidence, EvidenceImage, JournalData } from "./types";
+import type { Activity, Category, Evidence, EvidenceImage, Group, JournalData } from "./types";
 import { uid } from "./format";
 
 // ── Excel (.xlsx) import/export ───────────────────────────────────────────────
-// One workbook, two data sheets (plus a "Petunjuk" sheet in the template):
+// One workbook, three data sheets (plus a "Petunjuk" sheet in the template):
 //   "Kegiatan"        : ID | Tanggal Mulai | Tanggal Selesai | Jam Mulai |
 //                       Jam Selesai | Rencana Kinerja | Kegiatan | Capaian |
 //                       Bukti Link | (Data gambar — jangan diubah)
-//   "Rencana Kinerja" : Nama | Warna
+//   "Rencana Kinerja" : Nama | Warna | Grup / Periode
+//   "Grup Periode"    : Nama | Tanggal Mulai | Tanggal Selesai
 //
-// Categories are referenced by NAME in the activity rows (human-friendly). The
-// last activity column round-trips image evidence as JSON so export→edit→import
-// is lossless for images too; humans just leave it alone.
+// Categories are referenced by NAME in the activity rows, and groups by NAME in
+// the category rows (human-friendly). The last activity column round-trips image
+// evidence as JSON so export→edit→import is lossless for images too; humans just
+// leave it alone.
 
 const ACT_SHEET = "Kegiatan";
 const CAT_SHEET = "Rencana Kinerja";
+const GRP_SHEET = "Grup Periode";
 const HELP_SHEET = "Petunjuk";
 
 const DEFAULT_COLORS = [
@@ -39,6 +42,13 @@ const ACT_COLUMNS = [
 const CAT_COLUMNS = [
   { header: "Nama", key: "name", width: 30 },
   { header: "Warna", key: "color", width: 12 },
+  { header: "Grup / Periode", key: "group", width: 24 },
+];
+
+const GRP_COLUMNS = [
+  { header: "Nama", key: "name", width: 28 },
+  { header: "Tanggal Mulai", key: "startDate", width: 15 },
+  { header: "Tanggal Selesai", key: "endDate", width: 15 },
 ];
 
 const HEADER_FILL = "FF0A84FF";
@@ -117,10 +127,41 @@ function addCategoryValidation(ws: ExcelJS.Worksheet, catCount: number) {
   }
 }
 
-function fillCategorySheet(wb: ExcelJS.Workbook, categories: Category[]) {
+// Add a group dropdown on the "Rencana Kinerja" sheet's Grup column (col C).
+function addGroupValidation(ws: ExcelJS.Worksheet, groupCount: number) {
+  const lastGrpRow = Math.max(groupCount + 1, 2);
+  for (let r = 2; r <= 1000; r++) {
+    ws.getCell(`C${r}`).dataValidation = {
+      type: "list",
+      allowBlank: true,
+      formulae: [`'${GRP_SHEET}'!$A$2:$A$${lastGrpRow}`],
+      showErrorMessage: false,
+    };
+  }
+}
+
+function fillCategorySheet(
+  wb: ExcelJS.Workbook,
+  categories: Category[],
+  groups: Group[],
+) {
   const ws = wb.addWorksheet(CAT_SHEET);
   ws.columns = CAT_COLUMNS;
-  categories.forEach((c) => ws.addRow({ name: c.name, color: c.color }));
+  const groupName = (id?: string) =>
+    (id && groups.find((g) => g.id === id)?.name) || "";
+  categories.forEach((c) =>
+    ws.addRow({ name: c.name, color: c.color, group: groupName(c.groupId) }),
+  );
+  styleHeader(ws);
+  addGroupValidation(ws, groups.length);
+}
+
+function fillGroupSheet(wb: ExcelJS.Workbook, groups: Group[]) {
+  const ws = wb.addWorksheet(GRP_SHEET);
+  ws.columns = GRP_COLUMNS;
+  groups.forEach((g) =>
+    ws.addRow({ name: g.name, startDate: g.startDate, endDate: g.endDate }),
+  );
   styleHeader(ws);
 }
 
@@ -158,7 +199,8 @@ export async function buildWorkbook(data: JournalData): Promise<Buffer> {
   wb.creator = "Jurnal Kegiatan";
   wb.created = new Date();
   fillActivitySheet(wb, data);
-  fillCategorySheet(wb, data.categories);
+  fillCategorySheet(wb, data.categories, data.groups);
+  fillGroupSheet(wb, data.groups);
   const out = await wb.xlsx.writeBuffer();
   return Buffer.from(out);
 }
@@ -166,17 +208,31 @@ export async function buildWorkbook(data: JournalData): Promise<Buffer> {
 /** Blank template with example rows + an instructions sheet (used by /api/template). */
 export async function buildTemplateWorkbook(
   categories: Category[],
+  groups: Group[],
 ): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = "Jurnal Kegiatan";
   wb.created = new Date();
 
-  const cats = categories.length
+  // Example period used when the user has no groups yet, so template categories
+  // are already assigned to a valid periode.
+  const grps: Group[] = groups.length
+    ? groups
+    : [
+        {
+          id: "g1",
+          name: "SKP Tahun 2026",
+          startDate: "2026-01-01",
+          endDate: "2026-12-31",
+        },
+      ];
+
+  const cats: Category[] = categories.length
     ? categories
     : [
-        { id: "1", name: "Penyusunan Laporan", color: DEFAULT_COLORS[0] },
-        { id: "2", name: "Rapat & Koordinasi", color: DEFAULT_COLORS[3] },
-        { id: "3", name: "Pelayanan Administrasi", color: DEFAULT_COLORS[2] },
+        { id: "1", name: "Penyusunan Laporan", color: DEFAULT_COLORS[0], groupId: grps[0].id },
+        { id: "2", name: "Rapat & Koordinasi", color: DEFAULT_COLORS[3], groupId: grps[0].id },
+        { id: "3", name: "Pelayanan Administrasi", color: DEFAULT_COLORS[2], groupId: grps[0].id },
       ];
 
   // Instructions sheet first (so it opens on it).
@@ -190,12 +246,14 @@ export async function buildTemplateWorkbook(
     "3. Format tanggal: YYYY-MM-DD (contoh 2026-07-02). Format jam: HH:mm (contoh 09:30).",
     "4. Tanggal Selesai & jam boleh dikosongkan (dianggap sama dengan tanggal mulai / tanpa jam).",
     "5. Rencana Kinerja: pilih dari dropdown. Nama baru otomatis dibuat sebagai rencana kinerja baru saat impor.",
-    "6. Daftar rencana kinerja ada di sheet \"Rencana Kinerja\" (boleh ditambah/diubah namanya).",
-    "7. Kolom ID: KOSONGKAN untuk kegiatan baru. Baris hasil ekspor punya ID — biarkan agar impor memperbarui data yang sama (bukan menduplikat).",
-    "8. Bukti Link: satu URL per baris (tekan Alt+Enter di dalam sel untuk baris baru).",
-    "9. Kolom \"(Data gambar — jangan diubah)\": diisi otomatis saat ekspor. Jangan diedit manual.",
+    "6. Daftar rencana kinerja ada di sheet \"Rencana Kinerja\". Kolom \"Grup / Periode\" mengaitkan tiap rencana kinerja ke satu periode (pilih dari dropdown).",
+    "7. Daftar periode ada di sheet \"Grup Periode\" (Nama, Tanggal Mulai, Tanggal Selesai). Antar-periode sebaiknya TIDAK tumpang tindih tanggalnya. Periode baru pada sheet ini otomatis dibuat saat impor.",
+    "8. Kolom ID: KOSONGKAN untuk kegiatan baru. Baris hasil ekspor punya ID — biarkan agar impor memperbarui data yang sama (bukan menduplikat).",
+    "9. Bukti Link: satu URL per baris (tekan Alt+Enter di dalam sel untuk baris baru).",
+    "10. Kolom \"(Data gambar — jangan diubah)\": diisi otomatis saat ekspor. Jangan diedit manual.",
     "",
     "CATATAN IMPOR: impor bersifat menggabungkan — baris dengan ID cocok memperbarui data lama, baris tanpa ID ditambahkan. Impor tidak pernah menghapus kegiatan yang tidak ada di file.",
+    "Di aplikasi, rencana kinerja hanya bisa dipilih untuk kegiatan yang tanggalnya berada dalam rentang periode grupnya.",
     "Gambar bukti dukung diunggah langsung di aplikasi (tempel/Upload), tidak lewat Excel.",
   ];
   lines.forEach((t, i) => {
@@ -203,8 +261,9 @@ export async function buildTemplateWorkbook(
     if (i === 0) row.font = { bold: true, size: 13 };
   });
 
-  // Categories sheet.
-  fillCategorySheet(wb, cats as Category[]);
+  // Groups + categories sheets.
+  fillGroupSheet(wb, grps);
+  fillCategorySheet(wb, cats, grps);
 
   // Activities sheet with two example rows.
   const ws = wb.addWorksheet(ACT_SHEET);
@@ -242,8 +301,12 @@ export async function buildTemplateWorkbook(
 
 // ── Parse an uploaded workbook and MERGE into existing data ───────────────────
 // Merge rules (never destructive):
+//   - Groups: keep all existing; add new named periods from the "Grup Periode"
+//     sheet; refresh dates of matching ones. Overlap is not enforced here (the
+//     in-app editor guards that); an exported→imported file is trusted.
 //   - Categories: keep all existing; add any new names found (by case-insensitive
-//     name). Existing categories are left untouched.
+//     name). Group assignment from the sheet's "Grup / Periode" column is applied
+//     when it resolves to a known period.
 //   - Activities: upsert by ID. Rows with an ID matching an existing activity
 //     replace it; rows without an ID (or a new ID) are added. Existing activities
 //     absent from the file are kept.
@@ -256,6 +319,39 @@ export function parseWorkbookMerge(
   wb: ExcelJS.Workbook,
   current: JournalData,
 ): JournalData {
+  // Groups: start from current, index by normalized name.
+  const groups: Group[] = (current.groups || []).map((g) => ({ ...g }));
+  const groupByName = new Map<string, Group>();
+  groups.forEach((g) => groupByName.set(normName(g.name), g));
+
+  const grpSheet = wb.getWorksheet(GRP_SHEET);
+  if (grpSheet) {
+    grpSheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return;
+      const name = cellToString(row.getCell(1).value);
+      if (!name) return;
+      const startDate = cellToISODate(row.getCell(2).value);
+      const endDateRaw = cellToISODate(row.getCell(3).value) || startDate;
+      const endDate = endDateRaw < startDate ? startDate : endDateRaw;
+      const key = normName(name);
+      const existing = groupByName.get(key);
+      if (existing) {
+        if (startDate) {
+          existing.startDate = startDate;
+          existing.endDate = endDate;
+        }
+      } else if (startDate) {
+        const g: Group = { id: uid(), name: name.trim(), startDate, endDate };
+        groups.push(g);
+        groupByName.set(key, g);
+      }
+      // A named period with no start date and no match is skipped — a group
+      // without a range can't participate in date filtering.
+    });
+  }
+  const resolveGroupId = (name: string): string | undefined =>
+    groupByName.get(normName(name))?.id;
+
   // Categories: start from current, index by normalized name.
   const categories: Category[] = current.categories.map((c) => ({ ...c }));
   const catByName = new Map<string, Category>();
@@ -275,7 +371,8 @@ export function parseWorkbookMerge(
     return cat.id;
   };
 
-  // Pull explicit categories from the "Rencana Kinerja" sheet (names + colors).
+  // Pull explicit categories from the "Rencana Kinerja" sheet (names, colors,
+  // and their group/periode assignment).
   const catSheet = wb.getWorksheet(CAT_SHEET);
   if (catSheet) {
     catSheet.eachRow((row, rowNumber) => {
@@ -283,9 +380,11 @@ export function parseWorkbookMerge(
       const name = cellToString(row.getCell(1).value);
       if (!name) return;
       const color = cellToString(row.getCell(2).value);
+      const groupName = cellToString(row.getCell(3).value);
       const key = normName(name);
-      if (!catByName.has(key)) {
-        const cat: Category = {
+      let cat = catByName.get(key);
+      if (!cat) {
+        cat = {
           id: uid(),
           name: name.trim(),
           color: /^#?[0-9a-fA-F]{6}$/.test(color)
@@ -294,6 +393,12 @@ export function parseWorkbookMerge(
         };
         categories.push(cat);
         catByName.set(key, cat);
+      }
+      // Apply group assignment when the column resolves to a known period.
+      // Blank/unknown group names leave the existing assignment untouched.
+      if (groupName) {
+        const gid = resolveGroupId(groupName);
+        if (gid) cat.groupId = gid;
       }
     });
   }
@@ -377,7 +482,7 @@ export function parseWorkbookMerge(
     throw new Error("Tidak ada baris kegiatan yang valid di file.");
   }
 
-  return { activities, categories };
+  return { activities, categories, groups };
 }
 
 /** Load an uploaded .xlsx buffer into an ExcelJS workbook. */

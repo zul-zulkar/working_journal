@@ -6,14 +6,22 @@ import type { Category } from "@/lib/types";
 // Searchable select for choosing a Rencana Kinerja (category) in the editor.
 // Rendered in normal flow (the list grows the modal body) so it is never clipped
 // by the modal's overflow:auto, and works well on mobile.
+//
+// `categories` is the list AVAILABLE for the activity's date (already filtered by
+// the caller). `allCategories` resolves the selected label even when the current
+// value falls outside that date's period (e.g. editing an older activity).
 export default function CategorySelect({
   categories,
   value,
   onChange,
+  allCategories,
+  emptyHint,
 }: {
   categories: Category[];
   value: string;
   onChange: (id: string) => void;
+  allCategories?: Category[];
+  emptyHint?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -21,7 +29,10 @@ export default function CategorySelect({
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const selected = categories.find((c) => c.id === value) || null;
+  const resolveList = allCategories && allCategories.length ? allCategories : categories;
+  const selected = resolveList.find((c) => c.id === value) || null;
+  // The chosen Rencana Kinerja is set but not valid for the current date range.
+  const outOfRange = !!selected && !categories.some((c) => c.id === selected.id);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -103,7 +114,13 @@ export default function CategorySelect({
           </span>
           <span style={{ color: "var(--text-3)", fontSize: 12, flex: "none" }}>▾</span>
         </button>
-      ) : (
+      ) : null}
+      {!open && outOfRange && (
+        <div style={{ marginTop: 6, fontSize: 12, color: "#FF9F0A", lineHeight: 1.4 }}>
+          ⚠︎ Rencana kinerja ini di luar periode tanggal kegiatan. Ubah tanggal atau pilih rencana kinerja lain.
+        </div>
+      )}
+      {open && (
         <div
           style={{
             border: "1.5px solid var(--accent)",
@@ -133,8 +150,11 @@ export default function CategorySelect({
           />
           <div style={{ maxHeight: 220, overflow: "auto", padding: 5 }}>
             {filtered.length === 0 ? (
-              <div style={{ padding: "12px 10px", fontSize: 13.5, color: "var(--text-3)" }}>
-                Tidak ada rencana kinerja yang cocok.
+              <div style={{ padding: "12px 10px", fontSize: 13.5, color: "var(--text-3)", lineHeight: 1.5 }}>
+                {categories.length === 0
+                  ? emptyHint ||
+                    "Tidak ada rencana kinerja untuk tanggal ini. Buat periode & tetapkan rencana kinerja di halaman Kelola."
+                  : "Tidak ada rencana kinerja yang cocok."}
               </div>
             ) : (
               filtered.map((c, i) => {

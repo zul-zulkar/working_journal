@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getData, saveData } from "@/lib/sheets";
 import { ConfigError } from "@/lib/google";
-import type { Activity, Category, JournalData } from "@/lib/types";
+import type { Activity, Category, Group, JournalData } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,6 +39,8 @@ export async function PUT(req: NextRequest) {
     const data: JournalData = {
       activities: body.activities as Activity[],
       categories: body.categories as Category[],
+      // groups optional for backward compatibility with older clients.
+      groups: Array.isArray(body.groups) ? (body.groups as Group[]) : [],
     };
     await saveData(data);
     return NextResponse.json({ ok: true });
