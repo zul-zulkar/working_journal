@@ -149,3 +149,16 @@ textarea {
 .jkk-card-grid:hover {
   transform: translateY(-2px);
 }
+
+/* Floating action button (mobile add) */
+.jkk-fab {
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.jkk-fab:active {
+  transform: scale(0.92);
+}
+@media (hover: hover) {
+  .jkk-fab:hover {
+    transform: translateY(-2px);
+  }
+}

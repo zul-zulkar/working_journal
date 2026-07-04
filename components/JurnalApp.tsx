@@ -90,6 +90,59 @@ export default class JurnalApp extends React.Component<{}, State> {
   private onDocPaste = (e: ClipboardEvent) => {
     if (this.state.editorOpen) this.pasteImages(e);
   };
+  // ---- back-gesture / history trap (mobile Safari) ----
+  // We keep one history entry on the stack while any overlay is open, so the
+  // iOS edge-swipe back (or Android hardware back) closes the top overlay
+  // instead of leaving the app — no need to reach the ✕ / back button up top.
+  private histOpen = false;
+  private poppingBack = false;
+  private ignoreNextPop = false;
+  private overlayOpen(st: State = this.state) {
+    return !!(
+      st.editorOpen ||
+      st.manageOpen ||
+      st.dayView ||
+      st.shareOpen ||
+      st.sidebarOpen ||
+      st.lightbox
+    );
+  }
+  private onPopState = () => {
+    // Our own history.back() cleanup — ignore, the entry is already gone.
+    if (this.ignoreNextPop) {
+      this.ignoreNextPop = false;
+      return;
+    }
+    const st = this.state;
+    if (!this.overlayOpen(st)) return;
+    // Close the top overlay only (stacking order), without touching history.
+    const patch: Partial<State> = st.lightbox
+      ? { lightbox: null }
+      : st.editorOpen
+      ? { editorOpen: false, editingId: null, form: null }
+      : st.shareOpen
+      ? { shareOpen: false }
+      : st.dayView
+      ? { dayView: null }
+      : st.manageOpen
+      ? { manageOpen: false }
+      : { sidebarOpen: false };
+    this.poppingBack = true;
+    this.setState(patch as State, () => {
+      this.poppingBack = false;
+      if (this.overlayOpen()) {
+        // Deeper overlays remain — re-arm the trap for the next back.
+        try {
+          window.history.pushState({ jkkOverlay: true }, "");
+        } catch {
+          /* ignore */
+        }
+        this.histOpen = true;
+      } else {
+        this.histOpen = false;
+      }
+    });
+  };
 
   constructor(props: {}) {
     super(props);
@@ -129,12 +182,40 @@ export default class JurnalApp extends React.Component<{}, State> {
     this.mounted = true;
     window.addEventListener("resize", this.onResize);
     document.addEventListener("paste", this.onDocPaste);
+    window.addEventListener("popstate", this.onPopState);
     this.load();
+  }
+  componentDidUpdate(_prevProps: {}, prevState: State) {
+    const was = this.overlayOpen(prevState);
+    const now = this.overlayOpen(this.state);
+    if (was === now) return;
+    if (now) {
+      // First overlay opened — push a trap entry so back closes it.
+      try {
+        window.history.pushState({ jkkOverlay: true }, "");
+      } catch {
+        /* ignore */
+      }
+      this.histOpen = true;
+    } else {
+      // Last overlay closed.
+      this.histOpen = false;
+      // Closed via an in-app control (not the back gesture): drop the trap entry.
+      if (!this.poppingBack) {
+        this.ignoreNextPop = true;
+        try {
+          window.history.back();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
   }
   componentWillUnmount() {
     this.mounted = false;
     window.removeEventListener("resize", this.onResize);
     document.removeEventListener("paste", this.onDocPaste);
+    window.removeEventListener("popstate", this.onPopState);
   }
 
   // ---------- persistence ----------
@@ -442,11 +523,10 @@ export default class JurnalApp extends React.Component<{}, State> {
   // ---------- editor ----------
   blankForm(iso?: string): FormState {
     const d = iso || todayISO();
-    // Default to the first Rencana Kinerja whose period covers this date.
-    const avail = categoriesInRange(this.state.categories, this.state.groups, d, d);
-    const cid = avail[0] ? avail[0].id : "";
+    // Start with no Rencana Kinerja selected — the user must pick one explicitly
+    // (required on save) so it can't be mis-selected or skipped by accident.
     return {
-      categoryId: cid,
+      categoryId: "",
       startDate: d,
       endDate: d,
       isRange: false,
@@ -510,6 +590,10 @@ export default class JurnalApp extends React.Component<{}, State> {
   saveForm() {
     const f = this.state.form;
     if (!f) return;
+    if (!f.categoryId) {
+      this.flash("Rencana Kinerja wajib dipilih");
+      return;
+    }
     if (!f.title || !f.title.trim()) {
       this.flash("Nama kegiatan wajib diisi");
       return;
@@ -518,7 +602,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     if (endDate < f.startDate) endDate = f.startDate;
     const act: Activity = {
       id: this.state.editingId || uid(),
-      categoryId: f.categoryId || (this.state.categories[0] && this.state.categories[0].id) || "",
+      categoryId: f.categoryId,
       startDate: f.startDate,
       endDate,
       startTime: f.hasTime ? f.startTime : "",
@@ -1238,9 +1322,10 @@ export default class JurnalApp extends React.Component<{}, State> {
                       <option value="title">Judul A–Z</option>
                     </select>
                     <button onClick={() => this.openShare()} style={{ border: "none", background: "var(--fill)", color: "var(--text)", borderRadius: 10, padding: "9px 15px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Bagikan</button>
+                    {/* Desktop keeps the toolbar button; mobile uses the FAB below. */}
+                    <button onClick={() => this.openNew()} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 10, padding: "9px 16px", fontSize: 14, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>＋ Kegiatan</button>
                   </>
                 )}
-                <button onClick={() => this.openNew()} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 10, padding: "9px 16px", fontSize: 14, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>＋ Kegiatan</button>
               </div>
             </header>
 
@@ -1273,6 +1358,19 @@ export default class JurnalApp extends React.Component<{}, State> {
               </div>
             </aside>
           </div>
+        )}
+
+        {/* Floating action button — reachable add on mobile without going to the top */}
+        {isMobile && !this.overlayOpen(s) && (
+          <button
+            onClick={() => this.openNew()}
+            className="jkk-fab"
+            aria-label="Tambah kegiatan"
+            title="Tambah kegiatan"
+            style={fabStyle}
+          >
+            ＋
+          </button>
         )}
       </>
     );
@@ -1479,7 +1577,7 @@ export default class JurnalApp extends React.Component<{}, State> {
             {/* Rencana Kinerja — daftar bergantung pada tanggal kegiatan */}
             <div style={{ marginBottom: 17 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 0 8px" }}>
-                <label style={fieldLabel}>Rencana Kinerja</label>
+                <label style={fieldLabel}>Rencana Kinerja <span style={{ color: "#FF3B30", fontWeight: 700 }}>*</span></label>
                 <button onClick={() => this.openManage()} style={{ border: "none", background: "transparent", color: "var(--accent)", fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: 0 }}>Kelola</button>
               </div>
               <CategorySelect
@@ -1857,6 +1955,26 @@ const hamburgerBtn: CSSProperties = {
   justifyContent: "center",
 };
 const hamLine: CSSProperties = { width: 15, height: 1.8, background: "currentColor", borderRadius: 2 };
+const fabStyle: CSSProperties = {
+  position: "fixed",
+  right: 20,
+  bottom: "calc(20px + env(safe-area-inset-bottom, 0px))",
+  zIndex: 30,
+  width: 58,
+  height: 58,
+  borderRadius: "50%",
+  border: "none",
+  background: "var(--accent)",
+  color: "#fff",
+  fontSize: 27,
+  fontWeight: 400,
+  lineHeight: 1,
+  cursor: "pointer",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  boxShadow: "0 6px 20px rgba(10,132,255,.44), 0 2px 6px rgba(0,0,0,.2)",
+};
 const catPill: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
