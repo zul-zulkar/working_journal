@@ -1,6 +1,13 @@
 import type { JournalData } from "./types";
 import { catById, fmt, fmtDay, imageUrl, parseD, rangeLabel, toISO, todayISO } from "./format";
-import { ActivityItem, DayGroup, buildGroups, enrichActivity } from "./enrich";
+import {
+  ActivityItem,
+  DayGroup,
+  HourBucket,
+  buildGroups,
+  buildHourlyBuckets,
+  enrichActivity,
+} from "./enrich";
 
 export type ReportSection = "stats" | "timeline" | "grid" | "report" | "hourly" | "table";
 
@@ -15,8 +22,6 @@ export type ShareConfig = {
   hourly: boolean;
   table: boolean;
 };
-
-export type HourBucket = { hour: number; label: string; count: number; pct: number };
 
 export type CatStat = {
   name: string;
@@ -140,23 +145,7 @@ export function buildReport(data: JournalData, cfg: ShareConfig): ReportModel {
     ticks.push({ left: (i / denom) * 100, label: fmtDay(toISO(dd)) });
   }
 
-  // ── Per-jam: bucket activities by the hour of their start time. Activities
-  // without a recorded time are counted separately (noTimeCount) rather than
-  // silently dropped or bucketed into an arbitrary hour.
-  const hourCounts = new Array(24).fill(0) as number[];
-  let noTimeCount = 0;
-  acts.forEach((a) => {
-    const h = a.startTime ? parseInt(a.startTime.slice(0, 2), 10) : NaN;
-    if (Number.isFinite(h) && h >= 0 && h <= 23) hourCounts[h]++;
-    else noTimeCount++;
-  });
-  const hourlyMax = Math.max(1, ...hourCounts);
-  const hourly: HourBucket[] = hourCounts.map((count, hour) => ({
-    hour,
-    label: String(hour).padStart(2, "0") + ":00",
-    count,
-    pct: Math.round((count / hourlyMax) * 100),
-  }));
+  const { hourly, hourlyMax, noTimeCount } = buildHourlyBuckets(acts);
 
   const groups = buildGroups(acts, categories, true);
 

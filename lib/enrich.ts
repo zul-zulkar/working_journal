@@ -98,3 +98,33 @@ export function buildGroups(
     items: map[k].map((a) => enrichActivity(a, categories)),
   }));
 }
+
+export type HourBucket = { hour: number; label: string; count: number; pct: number };
+
+/**
+ * Bucket activities by the hour of their start time (00–23). Activities
+ * without a recorded time are counted separately (noTimeCount) rather than
+ * silently dropped or bucketed into an arbitrary hour. Shared by the share
+ * report and the app's own "Per Jam" view so both stay in sync.
+ */
+export function buildHourlyBuckets(acts: Pick<Activity, "startTime">[]): {
+  hourly: HourBucket[];
+  hourlyMax: number;
+  noTimeCount: number;
+} {
+  const hourCounts = new Array(24).fill(0) as number[];
+  let noTimeCount = 0;
+  acts.forEach((a) => {
+    const h = a.startTime ? parseInt(a.startTime.slice(0, 2), 10) : NaN;
+    if (Number.isFinite(h) && h >= 0 && h <= 23) hourCounts[h]++;
+    else noTimeCount++;
+  });
+  const hourlyMax = Math.max(1, ...hourCounts);
+  const hourly: HourBucket[] = hourCounts.map((count, hour) => ({
+    hour,
+    label: String(hour).padStart(2, "0") + ":00",
+    count,
+    pct: Math.round((count / hourlyMax) * 100),
+  }));
+  return { hourly, hourlyMax, noTimeCount };
+}

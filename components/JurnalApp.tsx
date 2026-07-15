@@ -2,7 +2,7 @@
 
 import React, { CSSProperties } from "react";
 import type { Activity, Category, Evidence, Group } from "@/lib/types";
-import { ActivityItem, buildGroups, enrichActivity } from "@/lib/enrich";
+import { ActivityItem, buildGroups, buildHourlyBuckets, enrichActivity } from "@/lib/enrich";
 import {
   PALETTE,
   catById,
@@ -32,8 +32,15 @@ const CAL_BAR_H = 5;
 const DEFAULT_VIEW: View = "list";
 const PREFS_KEY = "jkk:prefs:v1";
 
-type View = "list" | "grid" | "calendar";
+type View = "list" | "grid" | "calendar" | "table" | "hourly";
 type Sort = "date-desc" | "date-asc" | "title";
+const VIEW_LABEL: Record<View, string> = {
+  list: "List",
+  grid: "Grid",
+  calendar: "Kalender",
+  table: "Tabel",
+  hourly: "Per Jam",
+};
 
 type FormState = {
   categoryId: string;
@@ -1347,10 +1354,10 @@ export default class JurnalApp extends React.Component<{}, State> {
 
             {/* toolbar */}
             <header className="jkk-noprint" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "12px clamp(14px,3vw,26px)", background: "var(--surface)", borderBottom: "1px solid var(--sep)", position: "sticky", top: 0, zIndex: 15, backdropFilter: "saturate(180%) blur(20px)" }}>
-              <div style={{ display: "flex", background: "var(--fill)", borderRadius: 10, padding: 2, flex: "none" }}>
-                {(["list", "grid", "calendar"] as View[]).map((v) => (
-                  <button key={v} onClick={() => this.setView(v)} style={this.navStyle(s.view === v)}>
-                    {v === "list" ? "List" : v === "grid" ? "Grid" : "Kalender"}
+              <div style={{ display: "flex", background: "var(--fill)", borderRadius: 10, padding: 2, flex: "none", overflowX: "auto", maxWidth: "100%" }}>
+                {(["list", "grid", "calendar", "table", "hourly"] as View[]).map((v) => (
+                  <button key={v} onClick={() => this.setView(v)} style={{ ...this.navStyle(s.view === v), flex: "none", whiteSpace: "nowrap" }}>
+                    {VIEW_LABEL[v]}
                   </button>
                 ))}
               </div>
@@ -1383,6 +1390,8 @@ export default class JurnalApp extends React.Component<{}, State> {
               {s.view === "list" && this.renderList(filtered, hasResults)}
               {s.view === "grid" && this.renderGrid(filtered, hasResults)}
               {s.view === "calendar" && this.renderCalendar()}
+              {s.view === "table" && this.renderTable(filtered, hasResults)}
+              {s.view === "hourly" && this.renderHourly(filtered, hasResults)}
             </main>
           </div>
         </div>
@@ -1514,6 +1523,94 @@ export default class JurnalApp extends React.Component<{}, State> {
             </div>
           </article>
         ))}
+      </div>
+    );
+  }
+
+  // ---------- TABLE ----------
+  renderTable(filtered: Activity[], hasResults: boolean) {
+    if (!hasResults) return this.renderEmpty();
+    const items = filtered.map((a) => enrichActivity(a, this.state.categories));
+    return (
+      <div style={{ maxWidth: 1080, margin: "0 auto" }}>
+        <div style={{ background: "var(--surface)", border: "1px solid var(--sep)", borderRadius: 14, overflow: "auto", boxShadow: "var(--shadow)" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr>
+                {["No", "Tanggal", "Rencana Kinerja", "Kegiatan", "Jam", "Capaian"].map((h) => (
+                  <th key={h} style={mainTableTh}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it, i) => (
+                <tr key={it.id} onClick={() => this.openEdit(it.id)} className="jkk-table-row" style={{ cursor: "pointer" }}>
+                  <td style={{ ...mainTableTd, color: "var(--text-3)" }}>{i + 1}</td>
+                  <td style={{ ...mainTableTd, whiteSpace: "nowrap" }}>{it.dateLabel}</td>
+                  <td style={mainTableTd}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 3, flex: "none", background: it.catColor }} />
+                      {it.catName}
+                    </span>
+                  </td>
+                  <td style={{ ...mainTableTd, fontWeight: 600, minWidth: 160 }}>{it.title}</td>
+                  <td style={{ ...mainTableTd, whiteSpace: "nowrap", color: "var(--text-2)" }}>{it.timeLabel || "—"}</td>
+                  <td style={{ ...mainTableTd, color: "var(--text-2)", minWidth: 220 }}>
+                    <span style={clampN(2, 12.5)}>{it.capaian}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p style={{ margin: "13px 2px", color: "var(--text-3)", fontSize: 12.5 }}>{items.length} kegiatan · klik baris untuk membuka.</p>
+      </div>
+    );
+  }
+
+  // ---------- PER JAM ----------
+  renderHourly(filtered: Activity[], hasResults: boolean) {
+    if (!hasResults) return this.renderEmpty();
+    const { hourly, noTimeCount } = buildHourlyBuckets(filtered);
+    const hasData = hourly.some((h) => h.count > 0);
+    return (
+      <div style={{ maxWidth: 860, margin: "0 auto" }}>
+        <div style={{ background: "var(--surface)", border: "1px solid var(--sep)", borderRadius: 14, padding: "20px 22px", boxShadow: "var(--shadow)" }}>
+          {hasData ? (
+            <>
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 160 }}>
+                {hourly.map((h) => (
+                  <div key={h.hour} title={`${h.label} — ${h.count} kegiatan`} style={{ flex: 1, display: "flex", alignItems: "flex-end", height: "100%" }}>
+                    <div
+                      style={{
+                        width: "100%",
+                        height: `${Math.max(h.pct, h.count ? 4 : 0)}%`,
+                        background: h.count ? "var(--accent)" : "transparent",
+                        borderRadius: "5px 5px 0 0",
+                        cursor: h.count ? "pointer" : "default",
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", borderTop: "1px solid var(--sep)", paddingTop: 7, marginTop: 3 }}>
+                {hourly.map((h) => (
+                  <div key={h.hour} style={{ flex: 1, textAlign: "center", fontSize: 11, color: "var(--text-3)" }}>
+                    {h.hour % 3 === 0 ? h.hour : ""}
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: 14, fontSize: 13, color: "var(--text-2)" }}>
+                {filtered.length - noTimeCount} kegiatan berjadwal (dengan jam)
+                {noTimeCount > 0 ? ` · ${noTimeCount} kegiatan tanpa jam tidak disertakan` : ""}.
+              </div>
+            </>
+          ) : (
+            <div style={{ textAlign: "center", padding: "40px 10px", color: "var(--text-3)", fontSize: 14 }}>
+              Tidak ada kegiatan dengan jam tercatat. Tambahkan jam saat mencatat kegiatan untuk melihat distribusinya di sini.
+            </div>
+          )}
+        </div>
       </div>
     );
   }
@@ -1900,8 +1997,19 @@ export default class JurnalApp extends React.Component<{}, State> {
             <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-.02em", flex: 1 }}>Bagikan Laporan</h2>
             <button onClick={() => this.closeShare()} style={closeBtn}>✕</button>
           </header>
+          {/* Pinned (not inside the scrollable area below) so the link is the
+              first thing visible — it must never require scrolling to find. */}
+          <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--sep)", background: "var(--surface-2)", flex: "none" }}>
+            <div style={{ fontSize: 12.5, color: "var(--text-2)", marginBottom: 8 }}>
+              Tautan publik read-only · <b style={{ color: "var(--text)" }}>{n} kegiatan</b> disertakan
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input value={url || (s.shareTokenBusy ? "Menyiapkan tautan…" : "")} readOnly style={{ flex: 1, minWidth: 0, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--sep-2)", background: "var(--bg)", color: "var(--text-2)", fontSize: 12, outline: "none", fontFamily: "ui-monospace,monospace" }} />
+              <button onClick={() => this.shCopy()} disabled={!url} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 10, padding: "0 18px", fontSize: 14, fontWeight: 600, cursor: url ? "pointer" : "default", opacity: url ? 1 : 0.6, whiteSpace: "nowrap" }}>Salin Tautan</button>
+            </div>
+          </div>
           <div style={{ padding: 20, overflow: "auto", flex: 1 }}>
-            <p style={{ margin: "0 0 18px", fontSize: 13.5, color: "var(--text-2)", lineHeight: 1.5 }}>Buat laporan read-only berisi kegiatan pada rentang tanggal tertentu — siap ditampilkan pada aplikasi SKP dan dilihat atasan.</p>
+            <p style={{ margin: "0 0 18px", fontSize: 13.5, color: "var(--text-2)", lineHeight: 1.5 }}>Sesuaikan judul, rentang tanggal, dan bagian yang ditampilkan — tautan di atas otomatis diperbarui.</p>
             <div style={{ marginBottom: 16 }}>
               <label style={{ ...fieldLabel, display: "block", margin: "0 0 7px" }}>Judul Laporan</label>
               <input value={cfg.title} onChange={(e) => this.setCfg({ title: e.target.value })} style={textInput} />
@@ -1921,7 +2029,7 @@ export default class JurnalApp extends React.Component<{}, State> {
               <button onClick={() => this.shQuick("all")} style={quickBtn}>Semua</button>
             </div>
             <label style={{ ...fieldLabel, display: "block", margin: "0 0 9px" }}>Bagian yang Ditampilkan</label>
-            <div style={{ display: "flex", flexDirection: "column", gap: 2, marginBottom: 18 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2, marginBottom: 6 }}>
               {([
                 ["stats", "Ringkasan statistik"],
                 ["timeline", "Lini masa / timeline"],
@@ -1936,16 +2044,7 @@ export default class JurnalApp extends React.Component<{}, State> {
                 </button>
               ))}
             </div>
-            <div style={{ background: "var(--surface-2)", border: "1px solid var(--sep)", borderRadius: 12, padding: "13px 15px", marginBottom: 14 }}>
-              <div style={{ fontSize: 13, color: "var(--text-2)", marginBottom: 8 }}>
-                <b style={{ color: "var(--text)" }}>{n} kegiatan</b> akan disertakan.
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <input value={url || (s.shareTokenBusy ? "Menyiapkan tautan…" : "")} readOnly style={{ flex: 1, minWidth: 0, padding: "9px 11px", borderRadius: 9, border: "1px solid var(--sep-2)", background: "var(--bg)", color: "var(--text-2)", fontSize: 12, outline: "none", fontFamily: "ui-monospace,monospace" }} />
-                <button onClick={() => this.shCopy()} disabled={!url} style={{ border: "none", background: "var(--fill-2)", color: "var(--text)", borderRadius: 9, padding: "0 15px", fontSize: 13.5, fontWeight: 600, cursor: url ? "pointer" : "default", opacity: url ? 1 : 0.5, whiteSpace: "nowrap" }}>Salin</button>
-              </div>
-            </div>
-            <p style={{ margin: 0, fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.5 }}>Catatan: tautan membuka laporan read-only dari data yang tersimpan di Spreadsheet, sehingga dapat dibuka lintas perangkat tanpa perlu login.</p>
+            <p style={{ margin: "14px 0 0", fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.5 }}>Catatan: tautan membuka laporan read-only dari data yang tersimpan di Spreadsheet, sehingga dapat dibuka lintas perangkat tanpa perlu login.</p>
           </div>
           <footer style={modalFooter}>
             <div style={{ flex: 1 }} />
@@ -2035,6 +2134,23 @@ const catPill: CSSProperties = {
   background: "var(--fill)",
   padding: "3px 10px",
   borderRadius: 20,
+};
+const mainTableTh: CSSProperties = {
+  textAlign: "left",
+  padding: "11px 14px",
+  fontSize: 11.5,
+  fontWeight: 700,
+  color: "var(--text-3)",
+  textTransform: "uppercase",
+  letterSpacing: ".04em",
+  borderBottom: "1px solid var(--sep)",
+  whiteSpace: "nowrap",
+};
+const mainTableTd: CSSProperties = {
+  padding: "11px 14px",
+  borderBottom: "1px solid var(--sep)",
+  verticalAlign: "top",
+  lineHeight: 1.4,
 };
 const rangeBadge: CSSProperties = {
   fontSize: 12,
