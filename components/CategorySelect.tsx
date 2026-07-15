@@ -93,7 +93,7 @@ export default function CategorySelect({
           style={{
             width: "100%",
             display: "flex",
-            alignItems: "center",
+            alignItems: "flex-start",
             gap: 9,
             padding: "10px 12px",
             borderRadius: 11,
@@ -107,12 +107,12 @@ export default function CategorySelect({
           }}
         >
           {selected && (
-            <span style={{ width: 10, height: 10, borderRadius: 3, flex: "none", background: selected.color }} />
+            <span style={{ width: 10, height: 10, borderRadius: 3, flex: "none", marginTop: 4, background: selected.color }} />
           )}
-          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <span style={{ flex: 1, fontSize: 13, lineHeight: 1.35, overflowWrap: "break-word" }}>
             {selected ? selected.name : "Pilih rencana kinerja…"}
           </span>
-          <span style={{ color: "var(--text-3)", fontSize: 12, flex: "none" }}>▾</span>
+          <span style={{ color: "var(--text-3)", fontSize: 12, flex: "none", marginTop: 2 }}>▾</span>
         </button>
       ) : null}
       {!open && outOfRange && (
@@ -169,24 +169,22 @@ export default function CategorySelect({
                     style={{
                       width: "100%",
                       display: "flex",
-                      alignItems: "center",
+                      alignItems: "flex-start",
                       gap: 9,
                       padding: "9px 10px",
                       borderRadius: 8,
                       border: "none",
                       cursor: "pointer",
-                      fontSize: 14,
+                      fontSize: 13,
                       textAlign: "left",
                       color: active ? "var(--accent)" : "var(--text)",
                       fontWeight: active ? 640 : 500,
                       background: hilite ? "var(--fill)" : "transparent",
                     }}
                   >
-                    <span style={{ width: 10, height: 10, borderRadius: 3, flex: "none", background: c.color }} />
-                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {c.name}
-                    </span>
-                    {active && <span style={{ color: "var(--accent)", fontSize: 13, flex: "none" }}>✓</span>}
+                    <span style={{ width: 10, height: 10, borderRadius: 3, flex: "none", marginTop: 4, background: c.color }} />
+                    <span style={{ flex: 1, lineHeight: 1.35, overflowWrap: "break-word" }}>{c.name}</span>
+                    {active && <span style={{ color: "var(--accent)", fontSize: 13, flex: "none", marginTop: 2 }}>✓</span>}
                   </button>
                 );
               })

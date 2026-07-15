@@ -2,7 +2,7 @@ import type { JournalData } from "./types";
 import { catById, fmt, fmtDay, imageUrl, parseD, rangeLabel, toISO, todayISO } from "./format";
 import { ActivityItem, DayGroup, buildGroups, enrichActivity } from "./enrich";
 
-export type ReportSection = "stats" | "timeline" | "grid" | "report";
+export type ReportSection = "stats" | "timeline" | "grid" | "report" | "hourly" | "table";
 
 export type ShareConfig = {
   title: string;
@@ -12,7 +12,11 @@ export type ShareConfig = {
   timeline: boolean;
   grid: boolean;
   report: boolean;
+  hourly: boolean;
+  table: boolean;
 };
+
+export type HourBucket = { hour: number; label: string; count: number; pct: number };
 
 export type CatStat = {
   name: string;
@@ -41,6 +45,8 @@ export type ReportModel = {
   showTimeline: boolean;
   showGrid: boolean;
   showReport: boolean;
+  showHourly: boolean;
+  showTable: boolean;
   total: number;
   catCount: number;
   rangeDays: number;
@@ -49,11 +55,12 @@ export type ReportModel = {
   gRows: GRow[];
   ticks: Tick[];
   groups: DayGroup[];
+  hourly: HourBucket[];
+  hourlyMax: number;
+  noTimeCount: number;
   empty: boolean;
   generated: string;
 };
-
-const ALL_SECTIONS: ReportSection[] = ["stats", "timeline", "grid", "report"];
 
 export function actsInRange(data: JournalData, cfg: Pick<ShareConfig, "from" | "to">) {
   return data.activities.filter(
@@ -133,6 +140,24 @@ export function buildReport(data: JournalData, cfg: ShareConfig): ReportModel {
     ticks.push({ left: (i / denom) * 100, label: fmtDay(toISO(dd)) });
   }
 
+  // ── Per-jam: bucket activities by the hour of their start time. Activities
+  // without a recorded time are counted separately (noTimeCount) rather than
+  // silently dropped or bucketed into an arbitrary hour.
+  const hourCounts = new Array(24).fill(0) as number[];
+  let noTimeCount = 0;
+  acts.forEach((a) => {
+    const h = a.startTime ? parseInt(a.startTime.slice(0, 2), 10) : NaN;
+    if (Number.isFinite(h) && h >= 0 && h <= 23) hourCounts[h]++;
+    else noTimeCount++;
+  });
+  const hourlyMax = Math.max(1, ...hourCounts);
+  const hourly: HourBucket[] = hourCounts.map((count, hour) => ({
+    hour,
+    label: String(hour).padStart(2, "0") + ":00",
+    count,
+    pct: Math.round((count / hourlyMax) * 100),
+  }));
+
   const groups = buildGroups(acts, categories, true);
 
   return {
@@ -144,6 +169,8 @@ export function buildReport(data: JournalData, cfg: ShareConfig): ReportModel {
     showTimeline: cfg.timeline,
     showGrid: cfg.grid,
     showReport: cfg.report,
+    showHourly: cfg.hourly,
+    showTable: cfg.table,
     total,
     catCount: catStats.length,
     rangeDays,
@@ -152,51 +179,10 @@ export function buildReport(data: JournalData, cfg: ShareConfig): ReportModel {
     gRows,
     ticks,
     groups,
+    hourly,
+    hourlyMax,
+    noTimeCount,
     empty: total === 0,
     generated: fmt(todayISO(), { day: "numeric", month: "long", year: "numeric" }),
   };
-}
-
-// ── Share token codec ────────────────────────────────────────────────────────
-// The public /share/[token] route is stateless: the token encodes the report
-// config. Data itself is read fresh from Sheets so the link works across devices.
-
-function b64urlEncode(s: string): string {
-  const b64 =
-    typeof Buffer !== "undefined"
-      ? Buffer.from(s, "utf8").toString("base64")
-      : btoa(unescape(encodeURIComponent(s)));
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function b64urlDecode(s: string): string {
-  const b64 = s.replace(/-/g, "+").replace(/_/g, "/");
-  if (typeof Buffer !== "undefined") return Buffer.from(b64, "base64").toString("utf8");
-  return decodeURIComponent(escape(atob(b64)));
-}
-
-export function encodeShareToken(cfg: ShareConfig): string {
-  const secs = ALL_SECTIONS.filter((k) => cfg[k]);
-  return b64urlEncode(
-    JSON.stringify({ f: cfg.from, t: cfg.to, s: secs, ti: cfg.title }),
-  );
-}
-
-export function decodeShareToken(token: string): ShareConfig | null {
-  try {
-    const obj = JSON.parse(b64urlDecode(token));
-    if (!obj || typeof obj.f !== "string" || typeof obj.t !== "string") return null;
-    const secs: string[] = Array.isArray(obj.s) ? obj.s : ALL_SECTIONS;
-    return {
-      from: obj.f,
-      to: obj.t,
-      title: typeof obj.ti === "string" ? obj.ti : "Laporan Kegiatan",
-      stats: secs.includes("stats"),
-      timeline: secs.includes("timeline"),
-      grid: secs.includes("grid"),
-      report: secs.includes("report"),
-    };
-  } catch {
-    return null;
-  }
 }

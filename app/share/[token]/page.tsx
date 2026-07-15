@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { getDataReadOnly } from "@/lib/sheets";
-import { buildReport, decodeShareToken } from "@/lib/report";
+import { buildReport } from "@/lib/report";
+import { decodeShareToken } from "@/lib/shareToken";
 import { ConfigError } from "@/lib/google";
 import ShareReport from "@/components/ShareReport";
 
@@ -12,8 +13,12 @@ export async function generateMetadata({
 }: {
   params: { token: string };
 }): Promise<Metadata> {
-  const cfg = decodeShareToken(params.token);
-  return { title: cfg ? `${cfg.title} — Laporan` : "Laporan Kegiatan" };
+  try {
+    const cfg = decodeShareToken(params.token);
+    return { title: cfg ? `${cfg.title} — Laporan` : "Laporan Kegiatan" };
+  } catch {
+    return { title: "Laporan Kegiatan" };
+  }
 }
 
 function Notice({ title, body }: { title: string; body: string }) {
@@ -33,7 +38,20 @@ export default async function SharePage({
 }: {
   params: { token: string };
 }) {
-  const cfg = decodeShareToken(params.token);
+  let cfg;
+  try {
+    cfg = decodeShareToken(params.token);
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      return (
+        <Notice
+          title="Laporan belum tersedia"
+          body="Server belum dikonfigurasi untuk tautan Bagikan (SHARE_TOKEN_SECRET)."
+        />
+      );
+    }
+    throw err;
+  }
   if (!cfg) {
     return (
       <Notice

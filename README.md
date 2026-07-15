@@ -34,6 +34,7 @@ app/
     export/route.ts         GET → unduh seluruh data sebagai Excel (.xlsx)
     template/route.ts       GET → unduh template Excel kosong (+ contoh & petunjuk)
     import/route.ts         POST → impor .xlsx, gabung ke data, simpan ke Sheets
+    share/route.ts          POST → buat token Bagikan bertanda tangan (server-only secret)
 components/
   JurnalApp.tsx             UI utama: list / grid / kalender, editor, kelola kategori, share
   ReportView.tsx            Render laporan (dipakai preview in-app & /share)
@@ -45,7 +46,8 @@ lib/
   storage.ts                Simpan gambar: Vercel Blob, fallback Google Drive
   drive.ts                  Unggah & stream gambar Google Drive (legacy)
   excel.ts                  Ekspor/impor Excel (.xlsx) + template (server-only)
-  report.ts                 buildReport() + codec token share
+  report.ts                 buildReport() (isomorphic)
+  shareToken.ts             codec token share (HMAC, server-only)
   enrich.ts / format.ts     View-model & util tanggal (aman di server + client)
 ```
 
@@ -86,6 +88,8 @@ Pada run pertama dengan sheet kosong, aplikasi mengisi contoh data (lihat `lib/s
 ```bash
 cp .env.local.example .env.local
 # isi GOOGLE_SHEET_ID, kredensial service account, dan BLOB_READ_WRITE_TOKEN
+# lalu isi SHARE_TOKEN_SECRET (wajib untuk fitur Bagikan):
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
 ### 4. Jalankan

@@ -13,7 +13,8 @@ export default function ReportView({
 }: {
   report: ReportModel;
   onToggleTheme: () => void;
-  onBack: () => void;
+  /** Omit on the public /share page — an external viewer has nowhere private to go back to. */
+  onBack?: () => void;
   backLabel?: string;
 }) {
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
@@ -39,9 +40,11 @@ export default function ReportView({
           backdropFilter: "saturate(180%) blur(20px)",
         }}
       >
-        <button onClick={onBack} style={backBtn}>
-          {backLabel}
-        </button>
+        {onBack && (
+          <button onClick={onBack} style={backBtn}>
+            {backLabel}
+          </button>
+        )}
         <div
           style={{
             flex: 1,
@@ -233,7 +236,7 @@ export default function ReportView({
                     }}
                   >
                     <div style={{ minWidth: 0 }}>
-                      <div style={ellip(13, 600)}>{r.title}</div>
+                      <div style={wrapText(12, 600)}>{r.title}</div>
                       <div style={{ ...ellip(11, 400), color: "var(--text-3)" }}>{r.dateLabel}</div>
                     </div>
                     <div
@@ -256,6 +259,56 @@ export default function ReportView({
                   </div>
                 ))}
               </div>
+            </div>
+          </section>
+        )}
+
+        {/* PER JAM */}
+        {report.showHourly && !report.empty && (
+          <section style={{ marginBottom: 38 }}>
+            <h2 style={sectionH2}>Distribusi per Jam</h2>
+            <div style={cardBox}>
+              {report.hourly.some((h) => h.count > 0) ? (
+                <>
+                  <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 120 }}>
+                    {report.hourly.map((h) => (
+                      <div
+                        key={h.hour}
+                        title={`${h.label} — ${h.count} kegiatan`}
+                        style={{ flex: 1, display: "flex", alignItems: "flex-end", height: "100%" }}
+                      >
+                        <div
+                          style={{
+                            width: "100%",
+                            height: `${Math.max(h.pct, h.count ? 4 : 0)}%`,
+                            background: h.count ? "var(--accent)" : "transparent",
+                            borderRadius: "4px 4px 0 0",
+                            cursor: h.count ? "pointer" : "default",
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", borderTop: "1px solid var(--sep)", paddingTop: 6, marginTop: 2 }}>
+                    {report.hourly.map((h) => (
+                      <div key={h.hour} style={{ flex: 1, textAlign: "center", fontSize: 10, color: "var(--text-3)" }}>
+                        {h.hour % 3 === 0 ? h.hour : ""}
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 12, fontSize: 12.5, color: "var(--text-2)" }}>
+                    {report.total - report.noTimeCount} kegiatan berjadwal (dengan jam)
+                    {report.noTimeCount > 0
+                      ? ` · ${report.noTimeCount} kegiatan tanpa jam tidak disertakan`
+                      : ""}
+                    .
+                  </div>
+                </>
+              ) : (
+                <div style={{ textAlign: "center", padding: "20px 10px", color: "var(--text-3)", fontSize: 13.5 }}>
+                  Tidak ada kegiatan dengan jam tercatat pada periode ini.
+                </div>
+              )}
             </div>
           </section>
         )}
@@ -331,6 +384,43 @@ export default function ReportView({
                   </div>
                 </article>
               ))}
+            </div>
+          </section>
+        )}
+
+        {/* TABEL */}
+        {report.showTable && !report.empty && (
+          <section style={{ marginBottom: 38 }}>
+            <h2 style={sectionH2}>Tabel Kegiatan</h2>
+            <div style={{ ...cardBox, padding: 0, overflow: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    {["No", "Tanggal", "Rencana Kinerja", "Kegiatan", "Jam", "Capaian"].map((h) => (
+                      <th key={h} style={tableTh}>
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.items.map((it, i) => (
+                    <tr key={it.id}>
+                      <td style={{ ...tableTd, color: "var(--text-3)" }}>{i + 1}</td>
+                      <td style={{ ...tableTd, whiteSpace: "nowrap" }}>{it.dateLabel}</td>
+                      <td style={tableTd}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ width: 8, height: 8, borderRadius: 3, flex: "none", background: it.catColor }} />
+                          {it.catName}
+                        </span>
+                      </td>
+                      <td style={{ ...tableTd, fontWeight: 600, minWidth: 160 }}>{it.title}</td>
+                      <td style={{ ...tableTd, whiteSpace: "nowrap", color: "var(--text-2)" }}>{it.timeLabel || "—"}</td>
+                      <td style={{ ...tableTd, color: "var(--text-2)", minWidth: 200 }}>{it.capaian}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </section>
         )}
@@ -546,3 +636,30 @@ function ellip(fontSize: number, fontWeight: number): React.CSSProperties {
     whiteSpace: "nowrap",
   };
 }
+// Full text always visible (wraps instead of truncating) — used for Rencana
+// Kinerja / nama kegiatan labels so a complete sentence is never cut off.
+function wrapText(fontSize: number, fontWeight: number): React.CSSProperties {
+  return {
+    fontSize,
+    fontWeight,
+    lineHeight: 1.3,
+    overflowWrap: "break-word",
+  };
+}
+const tableTh: React.CSSProperties = {
+  textAlign: "left",
+  padding: "10px 12px",
+  fontSize: 11.5,
+  fontWeight: 700,
+  color: "var(--text-3)",
+  textTransform: "uppercase",
+  letterSpacing: ".04em",
+  borderBottom: "1px solid var(--sep)",
+  whiteSpace: "nowrap",
+};
+const tableTd: React.CSSProperties = {
+  padding: "10px 12px",
+  borderBottom: "1px solid var(--sep)",
+  verticalAlign: "top",
+  lineHeight: 1.4,
+};

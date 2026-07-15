@@ -13,24 +13,22 @@ import {
   imageUrl,
   parseD,
   rangeLabel,
-  readableOn,
   toISO,
   todayISO,
   uid,
   validateGroupRange,
 } from "@/lib/format";
-import {
-  ShareConfig,
-  actsInRange,
-  buildReport,
-  encodeShareToken,
-} from "@/lib/report";
+import { ShareConfig, actsInRange, buildReport } from "@/lib/report";
 import Lightbox, { LightboxState } from "./Lightbox";
 import ReportView from "./ReportView";
 import CategorySelect from "./CategorySelect";
 
 const WEEK_START: "sunday" | "monday" = "sunday";
-const MAX_CAL_LANES = 3;
+// Calendar events render as thin lines (not labelled bars) so more of them fit
+// per day — the title only shows on hover (native title tooltip).
+const MAX_CAL_LANES = 7;
+const CAL_LANE_H = 8;
+const CAL_BAR_H = 5;
 const DEFAULT_VIEW: View = "list";
 const PREFS_KEY = "jkk:prefs:v1";
 
@@ -78,12 +76,17 @@ type State = {
   shareOpen: boolean;
   shareView: boolean;
   shareCfg: ShareConfig | null;
+  /** Signed token for the current shareCfg, minted server-side (see /api/share). */
+  shareToken: string | null;
+  shareTokenBusy: boolean;
   toast: string | null;
 };
 
 export default class JurnalApp extends React.Component<{}, State> {
   private mounted = false;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
+  private shareTokenTimer: ReturnType<typeof setTimeout> | null = null;
+  private shareTokenSeq = 0;
   private onResize = () => {
     if (this.mounted) this.setState({ width: window.innerWidth });
   };
@@ -174,6 +177,8 @@ export default class JurnalApp extends React.Component<{}, State> {
       shareOpen: false,
       shareView: false,
       shareCfg: null,
+      shareToken: null,
+      shareTokenBusy: false,
       toast: null,
     };
   }
@@ -216,6 +221,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     window.removeEventListener("resize", this.onResize);
     document.removeEventListener("paste", this.onDocPaste);
     window.removeEventListener("popstate", this.onPopState);
+    if (this.shareTokenTimer) clearTimeout(this.shareTokenTimer);
   }
 
   // ---------- persistence ----------
@@ -450,8 +456,8 @@ export default class JurnalApp extends React.Component<{}, State> {
           lane++;
         }
       });
-      const gap = 4;
-      const bars: { title: string; css: CSSProperties; showLabel: boolean; actId: string }[] = [];
+      const gap = 3;
+      const bars: { title: string; css: CSSProperties; actId: string }[] = [];
       const overflow: Record<number, number> = {};
       let usedLanes = 0;
       segs.forEach((seg) => {
@@ -463,39 +469,26 @@ export default class JurnalApp extends React.Component<{}, State> {
         usedLanes = Math.max(usedLanes, seg.lane + 1);
         const c = catById(this.state.categories, seg.a.categoryId);
         const color = c ? c.color : "#8e8e93";
-        const tc = readableOn(color);
         const leftPct = ((seg.startCol / 7) * 100).toFixed(4);
         const widthCalc = `calc(${((seg.span / 7) * 100).toFixed(4)}% - ${gap}px)`;
-        const rl = seg.isStart ? "6px" : "2px";
-        const rr = seg.isEnd ? "6px" : "2px";
+        const rl = seg.isStart ? "3px" : "1px";
+        const rr = seg.isEnd ? "3px" : "1px";
+        // No inline label — the title only shows on hover (native tooltip via
+        // the `title` attribute on the element), which is what keeps these
+        // lines thin enough for many same-day activities to fit side by side.
         const css: CSSProperties = {
           position: "absolute",
-          left: `calc(${leftPct}% + 2px)`,
+          left: `calc(${leftPct}% + 1.5px)`,
           width: widthCalc,
-          top: seg.lane * 24,
-          height: 20,
-          display: "flex",
-          alignItems: "center",
-          padding: "0 7px",
-          fontSize: 11,
-          fontWeight: 600,
-          lineHeight: "20px",
-          color: tc,
+          top: seg.lane * CAL_LANE_H,
+          height: CAL_BAR_H,
           background: color,
           borderRadius: `${rl} ${rr} ${rr} ${rl}`,
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
           cursor: "pointer",
           boxShadow: "0 1px 1.5px rgba(0,0,0,.14)",
           pointerEvents: "auto",
         };
-        bars.push({
-          title: seg.a.title,
-          css,
-          showLabel: seg.isStart || seg.startCol === 0,
-          actId: seg.a.id,
-        });
+        bars.push({ title: seg.a.title, css, actId: seg.a.id });
       });
       const overflowCells = Object.keys(overflow).map((c) => ({
         n: overflow[Number(c)],
@@ -503,12 +496,12 @@ export default class JurnalApp extends React.Component<{}, State> {
           position: "absolute" as const,
           left: `${((Number(c) / 7) * 100).toFixed(4)}%`,
           width: `${(100 / 7).toFixed(4)}%`,
-          top: Math.min(usedLanes, maxLanes) * 24,
+          top: Math.min(usedLanes, maxLanes) * CAL_LANE_H + 2,
           pointerEvents: "none" as const,
         },
       }));
       const laneCount = Math.max(Math.min(usedLanes, maxLanes), 1);
-      const minH = Math.max(96, 34 + laneCount * 24 + (overflowCells.length ? 16 : 0) + 6);
+      const minH = Math.max(64, 32 + laneCount * CAL_LANE_H + (overflowCells.length ? 15 : 0) + 6);
       weeks.push({ days, bars, overflowCells, minH: minH + "px" });
     }
     return {
@@ -965,25 +958,69 @@ export default class JurnalApp extends React.Component<{}, State> {
     const t = new Date();
     const from = toISO(new Date(t.getFullYear(), t.getMonth(), 1));
     const to = todayISO();
-    this.setState({
-      shareOpen: true,
-      sidebarOpen: false,
-      shareCfg: {
-        title: "Laporan Kegiatan Kerja",
-        from,
-        to,
-        stats: true,
-        timeline: true,
-        grid: true,
-        report: true,
+    this.setState(
+      {
+        shareOpen: true,
+        sidebarOpen: false,
+        shareCfg: {
+          title: "Laporan Kegiatan Kerja",
+          from,
+          to,
+          stats: true,
+          timeline: true,
+          hourly: true,
+          grid: true,
+          table: true,
+          report: true,
+        },
+        shareToken: null,
       },
-    });
+      () => this.refreshShareToken(),
+    );
   }
   closeShare() {
+    if (this.shareTokenTimer) clearTimeout(this.shareTokenTimer);
     this.setState({ shareOpen: false });
   }
   setCfg(patch: Partial<ShareConfig>) {
-    this.setState((s) => (s.shareCfg ? ({ shareCfg: { ...s.shareCfg, ...patch } } as State) : null));
+    this.setState(
+      (s) => (s.shareCfg ? ({ shareCfg: { ...s.shareCfg, ...patch } } as State) : null),
+      () => this.refreshShareToken(),
+    );
+  }
+  /**
+   * Debounced fetch of a fresh signed token from /api/share whenever shareCfg
+   * changes. Signing happens server-side (SHARE_TOKEN_SECRET never reaches the
+   * client) so the date range in the resulting link can't be widened by tampering
+   * with the URL — see lib/shareToken.ts.
+   */
+  refreshShareToken() {
+    const cfg = this.state.shareCfg;
+    if (!cfg) return;
+    if (this.shareTokenTimer) clearTimeout(this.shareTokenTimer);
+    this.setState({ shareToken: null, shareTokenBusy: true });
+    const seq = ++this.shareTokenSeq;
+    this.shareTokenTimer = setTimeout(() => {
+      fetch("/api/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cfg),
+      })
+        .then(async (r) => {
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(j.error || "Gagal membuat tautan.");
+          return j as { token: string };
+        })
+        .then((j) => {
+          if (!this.mounted || seq !== this.shareTokenSeq) return;
+          this.setState({ shareToken: j.token, shareTokenBusy: false });
+        })
+        .catch((err) => {
+          if (!this.mounted || seq !== this.shareTokenSeq) return;
+          this.setState({ shareTokenBusy: false });
+          this.flash(err.message || "Gagal membuat tautan Bagikan");
+        });
+    }, 350);
   }
   shQuick(kind: "week" | "month" | "30" | "all") {
     const t = new Date();
@@ -1010,13 +1047,18 @@ export default class JurnalApp extends React.Component<{}, State> {
     }
     this.setCfg({ from, to });
   }
-  shareUrl(cfg: ShareConfig) {
+  /** Public URL for the current signed token, or "" while it's still being minted. */
+  shareUrl(): string {
+    if (!this.state.shareToken) return "";
     const origin = typeof window !== "undefined" ? window.location.origin : "";
-    return `${origin}/share/${encodeShareToken(cfg)}`;
+    return `${origin}/share/${this.state.shareToken}`;
   }
   shCopy() {
-    if (!this.state.shareCfg) return;
-    const url = this.shareUrl(this.state.shareCfg);
+    const url = this.shareUrl();
+    if (!url) {
+      this.flash("Tautan belum siap, tunggu sebentar…");
+      return;
+    }
     const done = () => this.flash("Tautan disalin");
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(url).then(done, () => this.flash("Salin manual dari kotak tautan"));
@@ -1190,10 +1232,18 @@ export default class JurnalApp extends React.Component<{}, State> {
     const s = this.state;
     const count = s.activities.filter((a) => a.categoryId === c.id).length;
     return (
-      <button key={c.id} onClick={() => this.setFilter(c.id)} style={this.sideStyle(s.filterCat === c.id)}>
-        <span style={{ width: 11, height: 11, borderRadius: 3, flex: "none", background: c.color }} />
-        <span style={{ flex: 1, textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</span>
-        <span style={{ color: "var(--text-3)", fontSize: 13, fontVariantNumeric: "tabular-nums" }}>{count}</span>
+      <button
+        key={c.id}
+        onClick={() => this.setFilter(c.id)}
+        style={{ ...this.sideStyle(s.filterCat === c.id), alignItems: "flex-start" }}
+      >
+        <span style={{ width: 10, height: 10, borderRadius: 3, flex: "none", background: c.color, marginTop: 3 }} />
+        <span style={{ flex: 1, textAlign: "left", fontSize: 13, lineHeight: 1.35, overflowWrap: "break-word" }}>
+          {c.name}
+        </span>
+        <span style={{ color: "var(--text-3)", fontSize: 12, fontVariantNumeric: "tabular-nums", marginTop: 2, flex: "none" }}>
+          {count}
+        </span>
       </button>
     );
   }
@@ -1413,7 +1463,7 @@ export default class JurnalApp extends React.Component<{}, State> {
             {it.rangeBadge && <span style={rangeBadge}>{it.rangeBadge}</span>}
             {it.timeLabel && <span style={{ fontSize: 12.5, color: "var(--text-3)" }}>{it.timeLabel}</span>}
           </div>
-          <h3 style={{ margin: "0 0 4px", fontSize: 16.5, fontWeight: 660, letterSpacing: "-.015em", lineHeight: 1.25 }}>{it.title}</h3>
+          <h3 style={{ margin: "0 0 4px", fontSize: 15, fontWeight: 660, letterSpacing: "-.01em", lineHeight: 1.3, overflowWrap: "break-word" }}>{it.title}</h3>
           <p style={clampN(2)}>{it.capaian}</p>
           {it.evCount > 0 && (
             <div style={{ display: "flex", gap: 8, marginTop: 11, flexWrap: "wrap", alignItems: "center" }}>
@@ -1455,7 +1505,7 @@ export default class JurnalApp extends React.Component<{}, State> {
                 </span>
                 {it.rangeBadge && <span style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)", background: "var(--accent-soft)", padding: "2px 8px", borderRadius: 16 }}>{it.rangeBadge}</span>}
               </div>
-              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 640, letterSpacing: "-.01em", lineHeight: 1.25 }}>{it.title}</h3>
+              <h3 style={{ margin: 0, fontSize: 14.5, fontWeight: 640, letterSpacing: "-.005em", lineHeight: 1.3, overflowWrap: "break-word" }}>{it.title}</h3>
               <p style={clampN(3, 13.5)}>{it.capaian}</p>
               <div style={{ marginTop: "auto", paddingTop: 5, display: "flex", alignItems: "center", gap: 7, color: "var(--text-3)", fontSize: 12 }}>
                 {it.dateLabel}
@@ -1498,9 +1548,7 @@ export default class JurnalApp extends React.Component<{}, State> {
               <div style={{ position: "absolute", left: 0, right: 0, top: 30, bottom: 4, pointerEvents: "none" }}>
                 <div style={{ position: "relative", height: "100%", margin: "0 3px" }}>
                   {wk.bars.map((bar, bi) => (
-                    <div key={bi} onClick={() => this.openEdit(bar.actId)} title={bar.title} style={bar.css}>
-                      {bar.showLabel ? bar.title : ""}
-                    </div>
+                    <div key={bi} onClick={() => this.openEdit(bar.actId)} title={bar.title} style={bar.css} />
                   ))}
                   {wk.overflowCells.map((ov, oi) => (
                     <div key={oi} style={ov.style}>
@@ -1512,7 +1560,7 @@ export default class JurnalApp extends React.Component<{}, State> {
             </div>
           ))}
         </div>
-        <p style={{ margin: "13px 2px", color: "var(--text-3)", fontSize: 12.5 }}>Klik tanggal untuk menambah kegiatan · klik bar untuk membuka.</p>
+        <p style={{ margin: "13px 2px", color: "var(--text-3)", fontSize: 12.5 }}>Klik tanggal untuk menambah kegiatan · arahkan kursor ke garis untuk lihat judul, klik untuk membuka.</p>
       </div>
     );
   }
@@ -1844,7 +1892,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     if (!cfg) return null;
     const isMobile = s.width < 860;
     const n = actsInRange({ activities: s.activities, categories: s.categories, groups: s.groups }, cfg).length;
-    const url = this.shareUrl(cfg);
+    const url = this.shareUrl();
     return (
       <div onClick={() => this.closeShare()} style={overlay(isMobile)}>
         <div onClick={(e) => e.stopPropagation()} style={modalCard(isMobile)}>
@@ -1877,7 +1925,9 @@ export default class JurnalApp extends React.Component<{}, State> {
               {([
                 ["stats", "Ringkasan statistik"],
                 ["timeline", "Lini masa / timeline"],
+                ["hourly", "Visualisasi per jam"],
                 ["grid", "Kartu grid + bukti"],
+                ["table", "Tabel kegiatan"],
                 ["report", "Rincian per tanggal"],
               ] as [keyof ShareConfig, string][]).map(([key, label]) => (
                 <button key={key} onClick={() => this.setCfg({ [key]: !cfg[key] } as Partial<ShareConfig>)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", border: "none", background: "transparent", color: "var(--text)", fontSize: 14.5, padding: "9px 2px", cursor: "pointer" }}>
@@ -1891,8 +1941,8 @@ export default class JurnalApp extends React.Component<{}, State> {
                 <b style={{ color: "var(--text)" }}>{n} kegiatan</b> akan disertakan.
               </div>
               <div style={{ display: "flex", gap: 8 }}>
-                <input value={url} readOnly style={{ flex: 1, minWidth: 0, padding: "9px 11px", borderRadius: 9, border: "1px solid var(--sep-2)", background: "var(--bg)", color: "var(--text-2)", fontSize: 12, outline: "none", fontFamily: "ui-monospace,monospace" }} />
-                <button onClick={() => this.shCopy()} style={{ border: "none", background: "var(--fill-2)", color: "var(--text)", borderRadius: 9, padding: "0 15px", fontSize: 13.5, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>Salin</button>
+                <input value={url || (s.shareTokenBusy ? "Menyiapkan tautan…" : "")} readOnly style={{ flex: 1, minWidth: 0, padding: "9px 11px", borderRadius: 9, border: "1px solid var(--sep-2)", background: "var(--bg)", color: "var(--text-2)", fontSize: 12, outline: "none", fontFamily: "ui-monospace,monospace" }} />
+                <button onClick={() => this.shCopy()} disabled={!url} style={{ border: "none", background: "var(--fill-2)", color: "var(--text)", borderRadius: 9, padding: "0 15px", fontSize: 13.5, fontWeight: 600, cursor: url ? "pointer" : "default", opacity: url ? 1 : 0.5, whiteSpace: "nowrap" }}>Salin</button>
               </div>
             </div>
             <p style={{ margin: 0, fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.5 }}>Catatan: tautan membuka laporan read-only dari data yang tersimpan di Spreadsheet, sehingga dapat dibuka lintas perangkat tanpa perlu login.</p>

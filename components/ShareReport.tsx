@@ -1,16 +1,17 @@
 "use client";
 
 import { CSSProperties, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import type { ReportModel } from "@/lib/report";
 import ReportView from "./ReportView";
 
 const PREFS_KEY = "jkk:prefs:v1";
 
-// Public read-only report page wrapper. Owns theme (so the ◐ toggle works) and a
-// back button that returns to the app home.
+// Public read-only report page wrapper. Owns theme (so the ◐ toggle works).
+// Deliberately has no "back to app" navigation: this page is handed to people
+// outside the app (e.g. an atasan) via /share/[token], and the main app has no
+// login — routing them into it would expose every activity, not just this
+// report's date range.
 export default function ShareReport({ report }: { report: ReportModel }) {
-  const router = useRouter();
   const [theme, setTheme] = useState<"light" | "dark">("light");
 
   useEffect(() => {
@@ -37,12 +38,7 @@ export default function ShareReport({ report }: { report: ReportModel }) {
 
   return (
     <div data-theme={theme} style={rootStyle}>
-      <ReportView
-        report={report}
-        onToggleTheme={toggle}
-        onBack={() => router.push("/")}
-        backLabel="‹ Aplikasi"
-      />
+      <ReportView report={report} onToggleTheme={toggle} />
     </div>
   );
 }
