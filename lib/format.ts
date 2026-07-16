@@ -73,6 +73,13 @@ export function timeLabel(a: Pick<Activity, "startTime" | "endTime">): string {
   return "";
 }
 
+/** "HH:mm" → minutes since midnight. Invalid/empty input yields 0. */
+export function timeToMinutes(t: string): number {
+  const m = /^(\d{1,2}):(\d{2})/.exec(t || "");
+  if (!m) return 0;
+  return Math.min(23, parseInt(m[1], 10) || 0) * 60 + Math.min(59, parseInt(m[2], 10) || 0);
+}
+
 export function daysSpan(a: Pick<Activity, "startDate" | "endDate">): number {
   const s = parseD(a.startDate);
   const e = parseD(a.endDate || a.startDate);

@@ -2,7 +2,7 @@
 
 import React, { CSSProperties } from "react";
 import type { Activity, Category, Evidence, Group } from "@/lib/types";
-import { ActivityItem, buildGroups, buildHourlyBuckets, enrichActivity } from "@/lib/enrich";
+import { ActivityItem, buildGroups, enrichActivity } from "@/lib/enrich";
 import {
   PALETTE,
   catById,
@@ -13,6 +13,9 @@ import {
   imageUrl,
   parseD,
   rangeLabel,
+  readableOn,
+  timeLabel,
+  timeToMinutes,
   toISO,
   todayISO,
   uid,
@@ -29,11 +32,14 @@ const WEEK_START: "sunday" | "monday" = "sunday";
 const MAX_CAL_LANES = 7;
 const CAL_LANE_H = 8;
 const CAL_BAR_H = 5;
+// Height (px) of one hour row in the "Per Jam" day timeline.
+const HOUR_H = 52;
 const DEFAULT_VIEW: View = "list";
 const PREFS_KEY = "jkk:prefs:v1";
 
 type View = "list" | "grid" | "calendar" | "table" | "hourly";
 type Sort = "date-desc" | "date-asc" | "title";
+type TableCol = "date" | "time" | "cat" | "title" | "capaian";
 const VIEW_LABEL: Record<View, string> = {
   list: "List",
   grid: "Grid",
@@ -69,6 +75,9 @@ type State = {
   groups: Group[];
   calYear: number;
   calMonth: number;
+  hourlyDate: string;
+  tableSortCol: TableCol | null;
+  tableSortDir: "asc" | "desc";
   width: number;
   sidebarOpen: boolean;
   editorOpen: boolean;
@@ -170,6 +179,9 @@ export default class JurnalApp extends React.Component<{}, State> {
       groups: [],
       calYear: today.getFullYear(),
       calMonth: today.getMonth(),
+      hourlyDate: todayISO(),
+      tableSortCol: null,
+      tableSortDir: "asc",
       width: typeof window !== "undefined" ? window.innerWidth : 1200,
       sidebarOpen: false,
       editorOpen: false,
@@ -329,6 +341,36 @@ export default class JurnalApp extends React.Component<{}, State> {
       return a.startDate > b.startDate ? -1 : a.startDate < b.startDate ? 1 : 0;
     });
     return arr;
+  }
+  toggleTableSort(col: TableCol) {
+    this.setState((s) => ({
+      tableSortCol: col,
+      tableSortDir: s.tableSortCol === col && s.tableSortDir === "asc" ? "desc" : "asc",
+    }));
+  }
+  sortTableItems(items: ActivityItem[]): ActivityItem[] {
+    const { tableSortCol, tableSortDir } = this.state;
+    if (!tableSortCol) return items;
+    const dir = tableSortDir === "asc" ? 1 : -1;
+    const key = (it: ActivityItem): string => {
+      switch (tableSortCol) {
+        case "date":
+          return it.startDate;
+        case "time":
+          return it.timeLabel || "";
+        case "cat":
+          return it.catName;
+        case "title":
+          return it.title || "";
+        case "capaian":
+          return it.capaian || "";
+      }
+    };
+    return items.slice().sort((a, b) => {
+      const av = key(a);
+      const bv = key(b);
+      return av < bv ? -1 * dir : av > bv ? 1 * dir : 0;
+    });
   }
   buildDay(iso: string) {
     const acts = this.state.activities.filter(
@@ -520,6 +562,84 @@ export default class JurnalApp extends React.Component<{}, State> {
     };
   }
 
+  // ---------- hourly (day timeline, calendar-style) ----------
+  shiftHourlyDate(deltaDays: number) {
+    this.setState((st) => {
+      const d = parseD(st.hourlyDate);
+      d.setDate(d.getDate() + deltaDays);
+      return { hourlyDate: toISO(d) };
+    });
+  }
+  buildHourlyDay() {
+    const { activities, categories, filterCat, search, hourlyDate: iso } = this.state;
+    const q = (search || "").trim().toLowerCase();
+    const dayActs = activities.filter((a) => {
+      if (a.startDate > iso || (a.endDate || a.startDate) < iso) return false;
+      if (filterCat !== "all" && a.categoryId !== filterCat) return false;
+      if (!q) return true;
+      const c = catById(categories, a.categoryId);
+      return (
+        (a.title || "").toLowerCase().includes(q) ||
+        (a.capaian || "").toLowerCase().includes(q) ||
+        ((c && c.name) || "").toLowerCase().includes(q)
+      );
+    });
+
+    const timed = dayActs.filter((a) => a.startTime);
+    const noTime = dayActs.filter((a) => !a.startTime).map((a) => enrichActivity(a, categories));
+
+    type Seg = { a: Activity; startMin: number; endMin: number; lane: number };
+    const segs: Seg[] = timed.map((a) => {
+      const startMin = timeToMinutes(a.startTime);
+      let endMin = a.endTime ? timeToMinutes(a.endTime) : startMin + 30;
+      if (endMin <= startMin) endMin = startMin + 30;
+      return { a, startMin, endMin, lane: 0 };
+    });
+    segs.sort((x, y) => x.startMin - y.startMin || y.endMin - x.endMin);
+    const laneEnds: number[] = [];
+    segs.forEach((seg) => {
+      let lane = 0;
+      while (laneEnds[lane] !== undefined && laneEnds[lane] > seg.startMin) lane++;
+      seg.lane = lane;
+      laneEnds[lane] = seg.endMin;
+    });
+    const blocks = segs.map((seg) => {
+      const laneCount =
+        Math.max(...segs.filter((o) => o.startMin < seg.endMin && o.endMin > seg.startMin).map((o) => o.lane)) + 1;
+      const c = catById(categories, seg.a.categoryId);
+      const color = c ? c.color : "#8e8e93";
+      const top = (seg.startMin / 60) * HOUR_H;
+      const height = Math.max(((seg.endMin - seg.startMin) / 60) * HOUR_H - 2, 20);
+      const style: CSSProperties = {
+        position: "absolute",
+        top,
+        height,
+        boxSizing: "border-box",
+        left: `calc(${(seg.lane / laneCount) * 100}% + 2px)`,
+        width: `calc(${100 / laneCount}% - 4px)`,
+        background: color,
+        color: readableOn(color),
+        borderRadius: 7,
+        padding: "3px 7px",
+        fontSize: 12,
+        lineHeight: 1.3,
+        overflow: "hidden",
+        cursor: "pointer",
+        boxShadow: "0 1px 3px rgba(0,0,0,.16)",
+      };
+      return { id: seg.a.id, title: seg.a.title, timeLabel: timeLabel(seg.a), style };
+    });
+
+    return {
+      iso,
+      label: fmtLong(iso),
+      isToday: iso === todayISO(),
+      blocks,
+      noTime,
+      hasAny: dayActs.length > 0,
+    };
+  }
+
   // ---------- editor ----------
   blankForm(iso?: string): FormState {
     const d = iso || todayISO();
@@ -579,6 +699,42 @@ export default class JurnalApp extends React.Component<{}, State> {
   }
   closeEditor() {
     this.setState({ editorOpen: false, editingId: null, form: null });
+  }
+  /** Has the open form changed from what it started as (blank, or the activity being edited)? */
+  isFormDirty(): boolean {
+    const f = this.state.form;
+    if (!f) return false;
+    if (this.state.editingId) {
+      const a = this.state.activities.find((x) => x.id === this.state.editingId);
+      if (!a) return false;
+      return (
+        f.categoryId !== a.categoryId ||
+        f.startDate !== a.startDate ||
+        f.endDate !== (a.endDate || a.startDate) ||
+        f.startTime !== (a.startTime || "") ||
+        f.endTime !== (a.endTime || "") ||
+        f.title !== (a.title || "") ||
+        f.capaian !== (a.capaian || "") ||
+        f.evidence.length !== (a.evidence || []).length ||
+        f.evidence.some((ev, i) => ev.id !== (a.evidence || [])[i]?.id)
+      );
+    }
+    return (
+      !!f.categoryId ||
+      !!f.title.trim() ||
+      !!f.capaian.trim() ||
+      f.evidence.length > 0 ||
+      f.hasTime ||
+      f.isRange ||
+      !!f.linkDraft.trim()
+    );
+  }
+  /** Click-outside-the-panel close: confirm first if there are unsaved changes. */
+  requestCloseEditor() {
+    if (this.isFormDirty() && !window.confirm("Ada isian yang belum disimpan. Tutup dan buang perubahan?")) {
+      return;
+    }
+    this.closeEditor();
   }
   setForm(patch: Partial<FormState> | ((f: FormState) => Partial<FormState>)) {
     this.setState((s) => {
@@ -1391,7 +1547,7 @@ export default class JurnalApp extends React.Component<{}, State> {
               {s.view === "grid" && this.renderGrid(filtered, hasResults)}
               {s.view === "calendar" && this.renderCalendar()}
               {s.view === "table" && this.renderTable(filtered, hasResults)}
-              {s.view === "hourly" && this.renderHourly(filtered, hasResults)}
+              {s.view === "hourly" && this.renderHourly()}
             </main>
           </div>
         </div>
@@ -1528,18 +1684,52 @@ export default class JurnalApp extends React.Component<{}, State> {
   }
 
   // ---------- TABLE ----------
+  tableTh(col: TableCol, label: string) {
+    const s = this.state;
+    const active = s.tableSortCol === col;
+    return (
+      <th key={col} style={{ ...mainTableTh, padding: 0 }}>
+        <button
+          onClick={() => this.toggleTableSort(col)}
+          title="Urutkan"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            width: "100%",
+            border: "none",
+            background: "transparent",
+            font: "inherit",
+            color: active ? "var(--text)" : "inherit",
+            textTransform: "inherit",
+            letterSpacing: "inherit",
+            cursor: "pointer",
+            padding: "11px 14px",
+          }}
+        >
+          {label}
+          <span style={{ fontSize: 9, opacity: active ? 1 : 0.35 }}>
+            {active ? (s.tableSortDir === "asc" ? "▲" : "▼") : "▲▼"}
+          </span>
+        </button>
+      </th>
+    );
+  }
   renderTable(filtered: Activity[], hasResults: boolean) {
     if (!hasResults) return this.renderEmpty();
-    const items = filtered.map((a) => enrichActivity(a, this.state.categories));
+    const items = this.sortTableItems(filtered.map((a) => enrichActivity(a, this.state.categories)));
     return (
       <div style={{ maxWidth: 1080, margin: "0 auto" }}>
         <div style={{ background: "var(--surface)", border: "1px solid var(--sep)", borderRadius: 14, overflow: "auto", boxShadow: "var(--shadow)" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr>
-                {["No", "Tanggal", "Rencana Kinerja", "Kegiatan", "Jam", "Capaian"].map((h) => (
-                  <th key={h} style={mainTableTh}>{h}</th>
-                ))}
+                <th style={mainTableTh}>No</th>
+                {this.tableTh("date", "Tanggal")}
+                {this.tableTh("time", "Jam")}
+                {this.tableTh("cat", "Rencana Kinerja")}
+                {this.tableTh("title", "Kegiatan")}
+                {this.tableTh("capaian", "Capaian")}
               </tr>
             </thead>
             <tbody>
@@ -1547,6 +1737,7 @@ export default class JurnalApp extends React.Component<{}, State> {
                 <tr key={it.id} onClick={() => this.openEdit(it.id)} className="jkk-table-row" style={{ cursor: "pointer" }}>
                   <td style={{ ...mainTableTd, color: "var(--text-3)" }}>{i + 1}</td>
                   <td style={{ ...mainTableTd, whiteSpace: "nowrap" }}>{it.dateLabel}</td>
+                  <td style={{ ...mainTableTd, whiteSpace: "nowrap", color: "var(--text-2)" }}>{it.timeLabel || "—"}</td>
                   <td style={mainTableTd}>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                       <span style={{ width: 8, height: 8, borderRadius: 3, flex: "none", background: it.catColor }} />
@@ -1554,7 +1745,6 @@ export default class JurnalApp extends React.Component<{}, State> {
                     </span>
                   </td>
                   <td style={{ ...mainTableTd, fontWeight: 600, minWidth: 160 }}>{it.title}</td>
-                  <td style={{ ...mainTableTd, whiteSpace: "nowrap", color: "var(--text-2)" }}>{it.timeLabel || "—"}</td>
                   <td style={{ ...mainTableTd, color: "var(--text-2)", minWidth: 220 }}>
                     <span style={clampN(2, 12.5)}>{it.capaian}</span>
                   </td>
@@ -1563,54 +1753,76 @@ export default class JurnalApp extends React.Component<{}, State> {
             </tbody>
           </table>
         </div>
-        <p style={{ margin: "13px 2px", color: "var(--text-3)", fontSize: 12.5 }}>{items.length} kegiatan · klik baris untuk membuka.</p>
+        <p style={{ margin: "13px 2px", color: "var(--text-3)", fontSize: 12.5 }}>{items.length} kegiatan · klik judul kolom untuk mengurutkan, klik baris untuk membuka. Gunakan kotak pencarian di atas untuk mencari.</p>
       </div>
     );
   }
 
-  // ---------- PER JAM ----------
-  renderHourly(filtered: Activity[], hasResults: boolean) {
-    if (!hasResults) return this.renderEmpty();
-    const { hourly, noTimeCount } = buildHourlyBuckets(filtered);
-    const hasData = hourly.some((h) => h.count > 0);
+  // ---------- PER JAM (timeline harian ala kalender) ----------
+  renderHourly() {
+    const day = this.buildHourlyDay();
+    const hours = Array.from({ length: 24 }, (_, h) => h);
+    const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
     return (
-      <div style={{ maxWidth: 860, margin: "0 auto" }}>
-        <div style={{ background: "var(--surface)", border: "1px solid var(--sep)", borderRadius: 14, padding: "20px 22px", boxShadow: "var(--shadow)" }}>
-          {hasData ? (
-            <>
-              <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 160 }}>
-                {hourly.map((h) => (
-                  <div key={h.hour} title={`${h.label} — ${h.count} kegiatan`} style={{ flex: 1, display: "flex", alignItems: "flex-end", height: "100%" }}>
-                    <div
-                      style={{
-                        width: "100%",
-                        height: `${Math.max(h.pct, h.count ? 4 : 0)}%`,
-                        background: h.count ? "var(--accent)" : "transparent",
-                        borderRadius: "5px 5px 0 0",
-                        cursor: h.count ? "pointer" : "default",
-                      }}
-                    />
-                  </div>
-                ))}
-              </div>
-              <div style={{ display: "flex", borderTop: "1px solid var(--sep)", paddingTop: 7, marginTop: 3 }}>
-                {hourly.map((h) => (
-                  <div key={h.hour} style={{ flex: 1, textAlign: "center", fontSize: 11, color: "var(--text-3)" }}>
-                    {h.hour % 3 === 0 ? h.hour : ""}
-                  </div>
-                ))}
-              </div>
-              <div style={{ marginTop: 14, fontSize: 13, color: "var(--text-2)" }}>
-                {filtered.length - noTimeCount} kegiatan berjadwal (dengan jam)
-                {noTimeCount > 0 ? ` · ${noTimeCount} kegiatan tanpa jam tidak disertakan` : ""}.
-              </div>
-            </>
-          ) : (
-            <div style={{ textAlign: "center", padding: "40px 10px", color: "var(--text-3)", fontSize: 14 }}>
-              Tidak ada kegiatan dengan jam tercatat. Tambahkan jam saat mencatat kegiatan untuk melihat distribusinya di sini.
-            </div>
-          )}
+      <div style={{ maxWidth: 900, margin: "0 auto" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+          <h2 style={{ fontSize: 22, fontWeight: 720, margin: 0, letterSpacing: "-.025em", textTransform: "capitalize" }}>{day.label}</h2>
+          <div style={{ flex: 1 }} />
+          <input
+            type="date"
+            value={day.iso}
+            onChange={(e) => e.target.value && this.setState({ hourlyDate: e.target.value })}
+            style={{ ...smallDateInput, flex: "none" }}
+          />
+          <button onClick={() => this.setState({ hourlyDate: todayISO() })} style={calNavBtn}>Hari Ini</button>
+          <button onClick={() => this.shiftHourlyDate(-1)} style={calArrow}>‹</button>
+          <button onClick={() => this.shiftHourlyDate(1)} style={calArrow}>›</button>
         </div>
+
+        {!day.hasAny ? (
+          <div style={{ background: "var(--surface)", border: "1px solid var(--sep)", borderRadius: 14, boxShadow: "var(--shadow)", textAlign: "center", padding: "60px 20px", color: "var(--text-3)" }}>
+            <div style={{ fontSize: 40, opacity: 0.5, marginBottom: 6 }}>◔</div>
+            <div style={{ fontSize: 16, fontWeight: 640, color: "var(--text-2)" }}>Tidak ada kegiatan pada tanggal ini</div>
+            <button onClick={() => this.openNewOn(day.iso)} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "11px 20px", fontSize: 15, fontWeight: 600, cursor: "pointer", marginTop: 16 }}>＋ Tambah Kegiatan</button>
+          </div>
+        ) : (
+          <div style={{ background: "var(--surface)", border: "1px solid var(--sep)", borderRadius: 14, boxShadow: "var(--shadow)", overflow: "auto", maxHeight: "calc(100vh - 260px)" }}>
+            <div style={{ display: "flex" }}>
+              <div style={{ width: 50, flex: "none" }}>
+                {hours.map((h) => (
+                  <div key={h} style={{ height: HOUR_H, boxSizing: "border-box", borderTop: h ? "1px solid var(--sep)" : "none", paddingRight: 8, textAlign: "right", fontSize: 11, color: "var(--text-3)", transform: "translateY(-6px)" }}>
+                    {String(h).padStart(2, "0")}:00
+                  </div>
+                ))}
+              </div>
+              <div style={{ flex: 1, position: "relative", borderLeft: "1px solid var(--sep)" }}>
+                {hours.map((h) => (
+                  <div key={h} style={{ height: HOUR_H, boxSizing: "border-box", borderTop: h ? "1px solid var(--sep)" : "none" }} />
+                ))}
+                {day.isToday && (
+                  <div style={{ position: "absolute", left: 0, right: 0, top: (nowMin / 60) * HOUR_H, borderTop: "1.5px solid #FF3B30", pointerEvents: "none" }}>
+                    <span style={{ position: "absolute", left: -4, top: -4, width: 8, height: 8, borderRadius: "50%", background: "#FF3B30" }} />
+                  </div>
+                )}
+                {day.blocks.map((b) => (
+                  <div key={b.id} onClick={() => this.openEdit(b.id)} title={`${b.timeLabel} — ${b.title}`} style={b.style}>
+                    <div style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.title}</div>
+                    <div style={{ opacity: 0.85, fontSize: 11 }}>{b.timeLabel}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {day.noTime.length > 0 && (
+          <div style={{ marginTop: 18 }}>
+            <div style={{ fontSize: 13, fontWeight: 640, color: "var(--text-2)", marginBottom: 9 }}>Tanpa jam ({day.noTime.length})</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+              {day.noTime.map((it) => this.renderListCard(it))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -1712,7 +1924,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     const rangeEnd = f.isRange ? f.endDate : f.startDate;
     const availableCats = categoriesInRange(s.categories, s.groups, f.startDate, rangeEnd);
     return (
-      <div onClick={() => this.closeEditor()} style={overlay(isMobile)}>
+      <div onClick={() => this.requestCloseEditor()} style={overlay(isMobile)}>
         <div onClick={(e) => e.stopPropagation()} style={modalCard(isMobile)}>
           <header style={modalHeader}>
             <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-.02em", flex: 1 }}>{s.editingId ? "Ubah Kegiatan" : "Kegiatan Baru"}</h2>
