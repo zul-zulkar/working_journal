@@ -16,12 +16,15 @@ export default function CategorySelect({
   onChange,
   allCategories,
   emptyHint,
+  outOfRangeNote,
 }: {
   categories: Category[];
   value: string;
   onChange: (id: string) => void;
   allCategories?: Category[];
   emptyHint?: string;
+  /** Replaces the default out-of-range warning (e.g. when the date is still blank). */
+  outOfRangeNote?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -116,8 +119,9 @@ export default function CategorySelect({
         </button>
       ) : null}
       {!open && outOfRange && (
-        <div style={{ marginTop: 6, fontSize: 12, color: "#FF9F0A", lineHeight: 1.4 }}>
-          ⚠︎ Rencana kinerja ini di luar periode tanggal kegiatan. Ubah tanggal atau pilih rencana kinerja lain.
+        <div style={{ marginTop: 6, fontSize: 12, color: outOfRangeNote ? "var(--text-3)" : "#FF9F0A", lineHeight: 1.4 }}>
+          {outOfRangeNote ||
+            "⚠︎ Rencana kinerja ini di luar periode tanggal kegiatan. Ubah tanggal atau pilih rencana kinerja lain."}
         </div>
       )}
       {open && (

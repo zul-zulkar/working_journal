@@ -60,6 +60,8 @@ type FormState = {
   capaian: string;
   evidence: Evidence[];
   linkDraft: string;
+  /** This form is a copy of an existing activity (its date starts out blank). */
+  isDuplicate: boolean;
 };
 
 type State = {
@@ -657,6 +659,7 @@ export default class JurnalApp extends React.Component<{}, State> {
       capaian: "",
       evidence: [],
       linkDraft: "",
+      isDuplicate: false,
     };
   }
   openNew() {
@@ -694,8 +697,28 @@ export default class JurnalApp extends React.Component<{}, State> {
         capaian: a.capaian || "",
         evidence: (a.evidence || []).slice(),
         linkDraft: "",
+        isDuplicate: false,
       },
     });
+  }
+  /**
+   * Turn the open activity into a new, unsaved copy of itself. The date is left
+   * blank on purpose: a duplicate almost always belongs to another day, and an
+   * empty required field forces that choice instead of quietly reusing the
+   * source date. Evidence carries over by reference (same Blob/Drive asset,
+   * fresh local ids) so nothing is re-uploaded.
+   */
+  duplicateCurrent() {
+    const f = this.state.form;
+    if (!f || !this.state.editingId) return;
+    const evidence: Evidence[] = f.evidence.map((ev) => ({ ...ev, id: uid() }));
+    this.setState(
+      {
+        editingId: null,
+        form: { ...f, startDate: "", endDate: "", evidence, linkDraft: "", isDuplicate: true },
+      },
+      () => this.flash("Salinan dibuat — isi tanggal, lalu simpan"),
+    );
   }
   closeEditor() {
     this.setState({ editorOpen: false, editingId: null, form: null });
@@ -746,6 +769,10 @@ export default class JurnalApp extends React.Component<{}, State> {
   saveForm() {
     const f = this.state.form;
     if (!f) return;
+    if (!f.startDate) {
+      this.flash("Tanggal wajib diisi");
+      return;
+    }
     if (!f.categoryId) {
       this.flash("Rencana Kinerja wajib dipilih");
       return;
@@ -1927,7 +1954,7 @@ export default class JurnalApp extends React.Component<{}, State> {
       <div onClick={() => this.requestCloseEditor()} style={overlay(isMobile)}>
         <div onClick={(e) => e.stopPropagation()} style={modalCard(isMobile)}>
           <header style={modalHeader}>
-            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-.02em", flex: 1 }}>{s.editingId ? "Ubah Kegiatan" : "Kegiatan Baru"}</h2>
+            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-.02em", flex: 1 }}>{s.editingId ? "Ubah Kegiatan" : f.isDuplicate ? "Duplikat Kegiatan" : "Kegiatan Baru"}</h2>
             <button onClick={() => this.closeEditor()} style={closeBtn}>✕</button>
           </header>
           <div style={{ padding: 20, overflow: "auto", flex: 1 }}>
@@ -1942,8 +1969,15 @@ export default class JurnalApp extends React.Component<{}, State> {
                 allCategories={s.categories}
                 value={f.categoryId}
                 onChange={(id) => this.setForm({ categoryId: id })}
+                outOfRangeNote={
+                  f.startDate
+                    ? undefined
+                    : "Disalin dari kegiatan asal. Isi tanggal untuk memastikan periodenya cocok."
+                }
                 emptyHint={
-                  s.groups.length === 0
+                  !f.startDate
+                    ? "Isi tanggal kegiatan dulu — daftar rencana kinerja mengikuti periode tanggalnya."
+                    : s.groups.length === 0
                     ? "Belum ada periode. Buat periode & tetapkan rencana kinerja di halaman Kelola terlebih dahulu."
                     : "Tidak ada rencana kinerja untuk tanggal ini. Sesuaikan tanggal, atau tetapkan rencana kinerja ke periode yang mencakup tanggal ini di halaman Kelola."
                 }
@@ -1953,7 +1987,7 @@ export default class JurnalApp extends React.Component<{}, State> {
             {/* Tanggal */}
             <div style={{ marginBottom: 17 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 7 }}>
-                <label style={fieldLabel}>Tanggal</label>
+                <label style={fieldLabel}>Tanggal <span style={{ color: "#FF3B30", fontWeight: 700 }}>*</span></label>
                 <button onClick={() => this.setForm((ff) => ({ isRange: !ff.isRange, endDate: ff.startDate }))} style={toggleRow}>
                   Rentang tanggal{this.Switch(f.isRange)}
                 </button>
@@ -1967,6 +2001,11 @@ export default class JurnalApp extends React.Component<{}, State> {
                   </>
                 )}
               </div>
+              {!f.startDate && (
+                <div style={{ marginTop: 6, fontSize: 12, color: "#FF9F0A", lineHeight: 1.4 }}>
+                  ⚠︎ Tanggal masih kosong — isi dulu sebelum menyimpan.
+                </div>
+              )}
             </div>
 
             {/* Jam */}
@@ -2031,7 +2070,10 @@ export default class JurnalApp extends React.Component<{}, State> {
           </div>
           <footer style={modalFooter}>
             {s.editingId && (
-              <button onClick={() => this.deleteCurrent()} style={{ border: "none", background: "transparent", color: "#FF3B30", fontSize: 14, fontWeight: 600, cursor: "pointer", padding: "9px 4px" }}>Hapus</button>
+              <>
+                <button onClick={() => this.deleteCurrent()} style={footerLinkBtn("#FF3B30")}>Hapus</button>
+                <button onClick={() => this.duplicateCurrent()} style={footerLinkBtn("var(--accent)")}>Duplikat</button>
+              </>
             )}
             <div style={{ flex: 1 }} />
             <button onClick={() => this.closeEditor()} style={secondaryBtn}>Batal</button>
@@ -2499,6 +2541,19 @@ const modalHeader: CSSProperties = {
   borderBottom: "1px solid var(--sep)",
   flex: "none",
 };
+/** Borderless text action in a modal footer (Hapus / Duplikat). */
+function footerLinkBtn(color: string): CSSProperties {
+  return {
+    border: "none",
+    background: "transparent",
+    color,
+    fontSize: 14,
+    fontWeight: 600,
+    cursor: "pointer",
+    padding: "9px 4px",
+    whiteSpace: "nowrap",
+  };
+}
 const modalFooter: CSSProperties = {
   display: "flex",
   alignItems: "center",
