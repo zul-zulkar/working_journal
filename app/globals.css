@@ -114,6 +114,26 @@ textarea {
     opacity: 1;
   }
 }
+/* Indeterminate "searching" bar sweeping the bottom edge of the toolbar. */
+@keyframes jkk-scan {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(370%);
+  }
+}
+/* A search hit landing in the calendar / per-jam timeline. */
+@keyframes jkk-hit {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scaleX(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
 
 ::-webkit-scrollbar {
   width: 10px;

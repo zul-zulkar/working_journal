@@ -35,6 +35,9 @@ const CAL_BAR_H = 5;
 // Height (px) of one hour row in the "Per Jam" day timeline.
 const HOUR_H = 52;
 const DEFAULT_VIEW: View = "list";
+// Keystroke -> re-filter delay. Long enough that the "sedang mencari" state is
+// actually visible, short enough that results never feel late.
+const SEARCH_DEBOUNCE = 280;
 const PREFS_KEY = "jkk:prefs:v1";
 
 type View = "list" | "grid" | "calendar" | "table" | "hourly";
@@ -70,6 +73,10 @@ type State = {
   theme: "light" | "dark";
   view: View;
   search: string;
+  /** Debounced, normalised copy of `search` — what every view filters on. */
+  searchApplied: string;
+  /** A keystroke is still waiting for the debounce (drives the busy animation). */
+  searching: boolean;
   filterCat: string;
   sort: Sort;
   activities: Activity[];
@@ -104,6 +111,7 @@ export default class JurnalApp extends React.Component<{}, State> {
   private mounted = false;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private shareTokenTimer: ReturnType<typeof setTimeout> | null = null;
+  private searchTimer: ReturnType<typeof setTimeout> | null = null;
   private shareTokenSeq = 0;
   private onResize = () => {
     if (this.mounted) this.setState({ width: window.innerWidth });
@@ -174,6 +182,8 @@ export default class JurnalApp extends React.Component<{}, State> {
       theme: "light",
       view: DEFAULT_VIEW,
       search: "",
+      searchApplied: "",
+      searching: false,
       filterCat: "all",
       sort: "date-desc",
       activities: [],
@@ -243,6 +253,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     document.removeEventListener("paste", this.onDocPaste);
     window.removeEventListener("popstate", this.onPopState);
     if (this.shareTokenTimer) clearTimeout(this.shareTokenTimer);
+    if (this.searchTimer) clearTimeout(this.searchTimer);
   }
 
   // ---------- persistence ----------
@@ -321,21 +332,87 @@ export default class JurnalApp extends React.Component<{}, State> {
     }, 2200);
   }
 
+  // ---------- search ----------
+  // Typing stays instant; the filtering behind it is debounced. Between the
+  // keystroke and the debounce landing the app is visibly busy (spinner in the
+  // box, scanning bar under the toolbar, results dimmed), so a search over a
+  // large journal never looks like a frozen UI. Clearing applies immediately.
+  setSearch(v: string) {
+    if (this.searchTimer) clearTimeout(this.searchTimer);
+    const q = v.trim().toLowerCase();
+    if (!q) {
+      this.setState({ search: v, searchApplied: "", searching: false });
+      return;
+    }
+    this.setState({ search: v, searching: q !== this.state.searchApplied });
+    this.searchTimer = setTimeout(() => {
+      if (!this.mounted) return;
+      this.setState({ searchApplied: q, searching: false });
+    }, SEARCH_DEBOUNCE);
+  }
+  clearSearch() {
+    if (this.searchTimer) clearTimeout(this.searchTimer);
+    this.setState({ search: "", searchApplied: "", searching: false });
+  }
+  /** Back to "semua kegiatan" — used by the empty states. */
+  clearFilters() {
+    if (this.searchTimer) clearTimeout(this.searchTimer);
+    this.setState({ search: "", searchApplied: "", searching: false, filterCat: "all" });
+  }
+  /** Does this activity match the applied query (kegiatan, capaian, rencana kinerja)? */
+  matchesQuery(a: Activity): boolean {
+    const q = this.state.searchApplied;
+    if (!q) return true;
+    const c = catById(this.state.categories, a.categoryId);
+    return (
+      (a.title || "").toLowerCase().includes(q) ||
+      (a.capaian || "").toLowerCase().includes(q) ||
+      ((c && c.name) || "").toLowerCase().includes(q)
+    );
+  }
+  /**
+   * Search + Rencana Kinerja filter. Every view funnels through this, so one
+   * query narrows list, grid, tabel, kalender, per jam and the day sheet alike.
+   */
+  passesFilters(a: Activity): boolean {
+    const { filterCat } = this.state;
+    if (filterCat !== "all" && a.categoryId !== filterCat) return false;
+    return this.matchesQuery(a);
+  }
+  /**
+   * Nearest date to `fromISO` that still holds a match. The date-anchored views
+   * (kalender, per jam) show one month/day at a time, so a query whose hits sit
+   * elsewhere would otherwise look like "tidak ada hasil" — this powers a jump
+   * instead of a dead end.
+   */
+  nearestMatchISO(fromISO: string): string | null {
+    const from = parseD(fromISO).getTime();
+    let best: string | null = null;
+    let bestDist = Infinity;
+    for (const a of this.state.activities) {
+      if (!this.passesFilters(a)) continue;
+      const endISO = a.endDate || a.startDate;
+      const s = parseD(a.startDate).getTime();
+      const e = parseD(endISO).getTime();
+      const dist = from < s ? s - from : from > e ? from - e : 0;
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = from < s ? a.startDate : from > e ? endISO : fromISO;
+      }
+    }
+    return best;
+  }
+  /** Point the calendar month / per-jam day at a date that has a match. */
+  jumpToMatch(iso: string) {
+    const d = parseD(iso);
+    if (this.state.view === "hourly") this.setState({ hourlyDate: iso });
+    else this.setState({ calYear: d.getFullYear(), calMonth: d.getMonth() });
+  }
+
   // ---------- filtering ----------
   getFiltered(): Activity[] {
-    const { activities, search, filterCat, sort } = this.state;
-    let arr = activities.slice();
-    if (filterCat !== "all") arr = arr.filter((a) => a.categoryId === filterCat);
-    const q = (search || "").trim().toLowerCase();
-    if (q)
-      arr = arr.filter((a) => {
-        const c = catById(this.state.categories, a.categoryId);
-        return (
-          (a.title || "").toLowerCase().includes(q) ||
-          (a.capaian || "").toLowerCase().includes(q) ||
-          ((c && c.name) || "").toLowerCase().includes(q)
-        );
-      });
+    const { sort } = this.state;
+    const arr = this.state.activities.filter((a) => this.passesFilters(a));
     arr.sort((a, b) => {
       if (sort === "date-asc")
         return a.startDate < b.startDate ? -1 : a.startDate > b.startDate ? 1 : 0;
@@ -375,27 +452,46 @@ export default class JurnalApp extends React.Component<{}, State> {
     });
   }
   buildDay(iso: string) {
-    const acts = this.state.activities.filter(
+    const onDay = this.state.activities.filter(
       (a) => a.startDate <= iso && (a.endDate || a.startDate) >= iso,
     );
+    // Reached by clicking a calendar cell, so it shows exactly what that cell
+    // shows — search and Rencana Kinerja filter included.
+    const acts = onDay.filter((a) => this.passesFilters(a));
     acts.sort((a, b) => {
       const at = a.startTime || "~";
       const bt = b.startTime || "~";
       return at < bt ? -1 : at > bt ? 1 : 0;
     });
+    const hidden = onDay.length - acts.length;
     return {
       iso,
       label: fmtLong(iso),
       count: acts.length,
-      countLabel: acts.length + " kegiatan",
+      hidden,
+      countLabel: hidden ? acts.length + " dari " + onDay.length + " kegiatan" : acts.length + " kegiatan",
       empty: acts.length === 0,
+      dayEmpty: onDay.length === 0,
       items: acts.map((a) => enrichActivity(a, this.state.categories)),
     };
+  }
+  /** Move the open day sheet by whole days (prev / next). */
+  shiftDayView(deltaDays: number) {
+    const cur = this.state.dayView;
+    if (!cur) return;
+    const d = parseD(cur);
+    d.setDate(d.getDate() + deltaDays);
+    this.setState({ dayView: toISO(d) });
+    try {
+      window.scrollTo(0, 0);
+    } catch {
+      /* ignore */
+    }
   }
 
   // ---------- calendar ----------
   buildCalendar() {
-    const { calYear, calMonth, filterCat, activities } = this.state;
+    const { calYear, calMonth, activities, searchApplied: q } = this.state;
     const weekStartMon = WEEK_START !== "sunday";
     const maxLanes = MAX_CAL_LANES;
     const first = new Date(calYear, calMonth, 1);
@@ -405,7 +501,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     const gridStart = new Date(calYear, calMonth, 1 - offset);
     const today = todayISO();
     const acts = activities
-      .filter((a) => filterCat === "all" || a.categoryId === filterCat)
+      .filter((a) => this.passesFilters(a))
       .map((a) => ({
         a,
         s: parseD(a.startDate),
@@ -538,6 +634,8 @@ export default class JurnalApp extends React.Component<{}, State> {
           cursor: "pointer",
           boxShadow: "0 1px 1.5px rgba(0,0,0,.14)",
           pointerEvents: "auto",
+          // Hits grow in when a query lands, so it is obvious which bars survived.
+          animation: q ? "jkk-hit .34s ease both" : undefined,
         };
         bars.push({ title: seg.a.title, css, actId: seg.a.id });
       });
@@ -555,12 +653,16 @@ export default class JurnalApp extends React.Component<{}, State> {
       const minH = Math.max(64, 32 + laneCount * CAL_LANE_H + (overflowCells.length ? 15 : 0) + 6);
       weeks.push({ days, bars, overflowCells, minH: minH + "px" });
     }
+    const gridEnd = new Date(gridStart);
+    gridEnd.setDate(gridStart.getDate() + rows * 7 - 1);
     return {
       weeks,
       weekdays: weekStartMon
         ? ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"]
         : ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"],
       label: fmt(toISO(first), { month: "long", year: "numeric" }),
+      /** Matches visible in this grid — 0 with a query means: look elsewhere. */
+      shown: acts.filter((o) => !(o.e < gridStart || o.s > gridEnd)).length,
     };
   }
 
@@ -573,19 +675,11 @@ export default class JurnalApp extends React.Component<{}, State> {
     });
   }
   buildHourlyDay() {
-    const { activities, categories, filterCat, search, hourlyDate: iso } = this.state;
-    const q = (search || "").trim().toLowerCase();
-    const dayActs = activities.filter((a) => {
-      if (a.startDate > iso || (a.endDate || a.startDate) < iso) return false;
-      if (filterCat !== "all" && a.categoryId !== filterCat) return false;
-      if (!q) return true;
-      const c = catById(categories, a.categoryId);
-      return (
-        (a.title || "").toLowerCase().includes(q) ||
-        (a.capaian || "").toLowerCase().includes(q) ||
-        ((c && c.name) || "").toLowerCase().includes(q)
-      );
-    });
+    const { activities, categories, searchApplied: q, hourlyDate: iso } = this.state;
+    const onDay = activities.filter(
+      (a) => a.startDate <= iso && (a.endDate || a.startDate) >= iso,
+    );
+    const dayActs = onDay.filter((a) => this.passesFilters(a));
 
     const timed = dayActs.filter((a) => a.startTime);
     const noTime = dayActs.filter((a) => !a.startTime).map((a) => enrichActivity(a, categories));
@@ -628,6 +722,7 @@ export default class JurnalApp extends React.Component<{}, State> {
         overflow: "hidden",
         cursor: "pointer",
         boxShadow: "0 1px 3px rgba(0,0,0,.16)",
+        animation: q ? "jkk-hit .34s ease both" : undefined,
       };
       return { id: seg.a.id, title: seg.a.title, timeLabel: timeLabel(seg.a), style };
     });
@@ -639,6 +734,8 @@ export default class JurnalApp extends React.Component<{}, State> {
       blocks,
       noTime,
       hasAny: dayActs.length > 0,
+      /** Kegiatan on this day hidden by the search / Rencana Kinerja filter. */
+      hidden: onDay.length - dayActs.length,
     };
   }
 
@@ -1545,14 +1642,34 @@ export default class JurnalApp extends React.Component<{}, State> {
                 ))}
               </div>
               <div style={{ position: "relative", flex: 1, minWidth: 150, maxWidth: 360 }}>
-                <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: "var(--text-3)", fontSize: 15, pointerEvents: "none" }}>⌕</span>
+                {/* The magnifier turns into a spinner while the query settles. */}
+                {s.searching ? (
+                  <span style={searchSpinner} />
+                ) : (
+                  <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: "var(--text-3)", fontSize: 15, pointerEvents: "none" }}>⌕</span>
+                )}
                 <input
                   value={s.search}
-                  onChange={(e) => this.setState({ search: e.target.value })}
+                  onChange={(e) => this.setSearch(e.target.value)}
                   placeholder="Cari kegiatan…"
-                  style={{ width: "100%", padding: "9px 12px 9px 34px", borderRadius: 10, border: "1px solid var(--sep-2)", background: "var(--bg)", color: "var(--text)", fontSize: 14, outline: "none" }}
+                  style={{ width: "100%", padding: s.search ? "9px 34px" : "9px 12px 9px 34px", borderRadius: 10, border: `1px solid ${s.searching ? "var(--accent)" : "var(--sep-2)"}`, background: "var(--bg)", color: "var(--text)", fontSize: 14, outline: "none", transition: "border-color .18s ease" }}
                 />
+                {!!s.search && (
+                  <button onClick={() => this.clearSearch()} aria-label="Bersihkan pencarian" title="Bersihkan pencarian" style={{ position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)", border: "none", background: "var(--fill-2)", color: "var(--text-2)", width: 21, height: 21, borderRadius: "50%", fontSize: 11, lineHeight: 1, cursor: "pointer", padding: 0 }}>✕</button>
+                )}
               </div>
+              {!!s.search && (
+                <span style={{ ...searchChip, color: s.searching ? "var(--text-2)" : hasResults ? "var(--accent)" : "#FF3B30" }}>
+                  {s.searching ? (
+                    <>
+                      <span style={chipSpinner} />
+                      Mencari…
+                    </>
+                  ) : (
+                    `${filtered.length} hasil`
+                  )}
+                </span>
+              )}
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto", flex: "none" }}>
                 {showSidebar && (
                   <>
@@ -1567,14 +1684,31 @@ export default class JurnalApp extends React.Component<{}, State> {
                   </>
                 )}
               </div>
+              {/* Indeterminate scanning bar along the bottom edge of the toolbar. */}
+              {s.searching && (
+                <div style={{ position: "absolute", left: 0, right: 0, bottom: -1, height: 2, overflow: "hidden", pointerEvents: "none" }}>
+                  <div style={{ width: "38%", height: "100%", background: "var(--accent)", borderRadius: 2, animation: "jkk-scan 1.05s ease-in-out infinite" }} />
+                </div>
+              )}
             </header>
 
             <main style={{ padding: "clamp(14px,2.5vw,26px)", flex: 1 }}>
-              {s.view === "list" && this.renderList(filtered, hasResults)}
-              {s.view === "grid" && this.renderGrid(filtered, hasResults)}
-              {s.view === "calendar" && this.renderCalendar()}
-              {s.view === "table" && this.renderTable(filtered, hasResults)}
-              {s.view === "hourly" && this.renderHourly()}
+              {/* Keyed on the applied query so every view replays its entrance
+                  the moment a search lands, and dimmed while one is pending. */}
+              <div
+                key={`q:${s.searchApplied}`}
+                style={{
+                  opacity: s.searching ? 0.45 : 1,
+                  transition: "opacity .18s ease",
+                  animation: s.searchApplied ? "jkk-fade .28s ease" : undefined,
+                }}
+              >
+                {s.view === "list" && this.renderList(filtered, hasResults)}
+                {s.view === "grid" && this.renderGrid(filtered, hasResults)}
+                {s.view === "calendar" && this.renderCalendar()}
+                {s.view === "table" && this.renderTable(filtered, hasResults)}
+                {s.view === "hourly" && this.renderHourly()}
+              </div>
             </main>
           </div>
         </div>
@@ -1788,6 +1922,8 @@ export default class JurnalApp extends React.Component<{}, State> {
   // ---------- PER JAM (timeline harian ala kalender) ----------
   renderHourly() {
     const day = this.buildHourlyDay();
+    const q = this.state.searchApplied;
+    const jump = !day.hasAny && (q || day.hidden > 0) ? this.nearestMatchISO(day.iso) : null;
     const hours = Array.from({ length: 24 }, (_, h) => h);
     const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
     return (
@@ -1806,11 +1942,32 @@ export default class JurnalApp extends React.Component<{}, State> {
           <button onClick={() => this.shiftHourlyDate(1)} style={calArrow}>›</button>
         </div>
 
+        {day.hasAny && day.hidden > 0 && (
+          <div style={filterNote}>
+            <span>{day.hidden} kegiatan pada tanggal ini disembunyikan oleh pencarian.</span>
+            <button onClick={() => this.clearFilters()} style={linkBtn}>Tampilkan semua</button>
+          </div>
+        )}
         {!day.hasAny ? (
           <div style={{ background: "var(--surface)", border: "1px solid var(--sep)", borderRadius: 14, boxShadow: "var(--shadow)", textAlign: "center", padding: "60px 20px", color: "var(--text-3)" }}>
-            <div style={{ fontSize: 40, opacity: 0.5, marginBottom: 6 }}>◔</div>
-            <div style={{ fontSize: 16, fontWeight: 640, color: "var(--text-2)" }}>Tidak ada kegiatan pada tanggal ini</div>
-            <button onClick={() => this.openNewOn(day.iso)} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "11px 20px", fontSize: 15, fontWeight: 600, cursor: "pointer", marginTop: 16 }}>＋ Tambah Kegiatan</button>
+            <div style={{ fontSize: 40, opacity: 0.5, marginBottom: 6 }}>{q || day.hidden > 0 ? "⌕" : "◔"}</div>
+            <div style={{ fontSize: 16, fontWeight: 640, color: "var(--text-2)" }}>
+              {q || day.hidden > 0
+                ? "Tidak ada kegiatan yang cocok pada tanggal ini"
+                : "Tidak ada kegiatan pada tanggal ini"}
+            </div>
+            {q || day.hidden > 0 ? (
+              <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", marginTop: 16 }}>
+                {jump && (
+                  <button onClick={() => this.jumpToMatch(jump)} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "11px 20px", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>
+                    Lompat ke {fmt(jump, { day: "numeric", month: "long", year: "numeric" })} ›
+                  </button>
+                )}
+                <button onClick={() => this.clearFilters()} style={{ border: "1px solid var(--sep-2)", background: "var(--surface)", color: "var(--text)", borderRadius: 11, padding: "11px 20px", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Bersihkan pencarian</button>
+              </div>
+            ) : (
+              <button onClick={() => this.openNewOn(day.iso)} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "11px 20px", fontSize: 15, fontWeight: 600, cursor: "pointer", marginTop: 16 }}>＋ Tambah Kegiatan</button>
+            )}
           </div>
         ) : (
           <div style={{ background: "var(--surface)", border: "1px solid var(--sep)", borderRadius: 14, boxShadow: "var(--shadow)", overflow: "auto", maxHeight: "calc(100vh - 260px)" }}>
@@ -1857,6 +2014,12 @@ export default class JurnalApp extends React.Component<{}, State> {
   // ---------- CALENDAR ----------
   renderCalendar() {
     const cal = this.buildCalendar();
+    const q = this.state.searchApplied;
+    // Middle of the shown month is the fairest anchor for "nearest match".
+    const jump =
+      q && cal.shown === 0
+        ? this.nearestMatchISO(toISO(new Date(this.state.calYear, this.state.calMonth, 15)))
+        : null;
     return (
       <div style={{ maxWidth: 1060, margin: "0 auto" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
@@ -1866,6 +2029,21 @@ export default class JurnalApp extends React.Component<{}, State> {
           <button onClick={() => this.setState((st) => { const d = new Date(st.calYear, st.calMonth - 1, 1); return { calYear: d.getFullYear(), calMonth: d.getMonth() }; })} style={calArrow}>‹</button>
           <button onClick={() => this.setState((st) => { const d = new Date(st.calYear, st.calMonth + 1, 1); return { calYear: d.getFullYear(), calMonth: d.getMonth() }; })} style={calArrow}>›</button>
         </div>
+        {!!q && (
+          <div style={filterNote}>
+            <span>
+              {cal.shown > 0
+                ? `${cal.shown} kegiatan cocok dengan pencarian di bulan ini.`
+                : "Tidak ada kegiatan yang cocok di bulan ini."}
+            </span>
+            {jump && (
+              <button onClick={() => this.jumpToMatch(jump)} style={linkBtn}>
+                Lompat ke {fmt(jump, { day: "numeric", month: "long", year: "numeric" })} ›
+              </button>
+            )}
+            <button onClick={() => this.clearFilters()} style={linkBtn}>Bersihkan</button>
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", background: "var(--surface)", border: "1px solid var(--sep)", borderBottom: "none", borderRadius: "14px 14px 0 0", overflow: "hidden" }}>
           {cal.weekdays.map((wd) => (
             <div key={wd} style={{ padding: "9px 8px", fontSize: 12, fontWeight: 680, color: "var(--text-3)", borderBottom: "1px solid var(--sep)" }}>{wd}</div>
@@ -1902,6 +2080,20 @@ export default class JurnalApp extends React.Component<{}, State> {
   }
 
   renderEmpty() {
+    const s = this.state;
+    if (s.searchApplied || s.filterCat !== "all")
+      return (
+        <div style={{ maxWidth: 420, margin: "70px auto", textAlign: "center", color: "var(--text-3)", animation: "jkk-pop .25s ease" }}>
+          <div style={{ fontSize: 44, marginBottom: 6, opacity: 0.5 }}>⌕</div>
+          <div style={{ fontSize: 17, fontWeight: 640, color: "var(--text-2)" }}>Tidak ada hasil</div>
+          <div style={{ fontSize: 14, margin: "6px 0 18px" }}>
+            {s.searchApplied
+              ? `Tidak ada kegiatan yang cocok dengan “${s.search.trim()}”.`
+              : "Tidak ada kegiatan pada rencana kinerja ini."}
+          </div>
+          <button onClick={() => this.clearFilters()} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "11px 20px", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Bersihkan pencarian</button>
+        </div>
+      );
     return (
       <div style={{ maxWidth: 420, margin: "70px auto", textAlign: "center", color: "var(--text-3)" }}>
         <div style={{ fontSize: 44, marginBottom: 6, opacity: 0.5 }}>◔</div>
@@ -1915,22 +2107,45 @@ export default class JurnalApp extends React.Component<{}, State> {
   // ---------- DAY DETAIL ----------
   renderDay() {
     const day = this.buildDay(this.state.dayView!);
+    const isMobile = this.state.width < 860;
+    const isToday = day.iso === todayISO();
     return (
       <div style={{ position: "fixed", inset: 0, zIndex: 45, background: "var(--bg)", overflow: "auto", animation: "jkk-fade .25s ease" }}>
         <div style={{ position: "sticky", top: 0, zIndex: 5, display: "flex", alignItems: "center", gap: 12, padding: "12px clamp(14px,4vw,26px)", background: "var(--surface)", borderBottom: "1px solid var(--sep)", backdropFilter: "saturate(180%) blur(20px)" }}>
-          <button onClick={() => this.closeDay()} style={backBtn}>‹ Kalender</button>
+          <button onClick={() => this.closeDay()} style={backBtn} title="Kembali ke kalender">{isMobile ? "‹" : "‹ Kalender"}</button>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 16, fontWeight: 720, letterSpacing: "-.02em", textTransform: "capitalize", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{day.label}</div>
             <div style={{ fontSize: 12.5, color: "var(--text-3)" }}>{day.countLabel}</div>
           </div>
-          <button onClick={() => this.openNewOn(day.iso)} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 10, padding: "9px 15px", fontSize: 14, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>＋ Tambah</button>
+          {/* Step day by day without bouncing back to the calendar. */}
+          <button onClick={() => this.shiftDayView(-1)} style={calArrow} title="Hari sebelumnya" aria-label="Hari sebelumnya">‹</button>
+          {!isToday && !isMobile && (
+            <button onClick={() => this.setState({ dayView: todayISO() })} style={calNavBtn}>Hari Ini</button>
+          )}
+          <button onClick={() => this.shiftDayView(1)} style={calArrow} title="Hari berikutnya" aria-label="Hari berikutnya">›</button>
+          <button onClick={() => this.openNewOn(day.iso)} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 10, padding: isMobile ? "9px 12px" : "9px 15px", fontSize: 14, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>＋{isMobile ? "" : " Tambah"}</button>
         </div>
-        <div style={{ maxWidth: 820, margin: "0 auto", padding: "clamp(16px,3vw,26px)" }}>
+        {/* Keyed on the date so stepping days is visible, not a silent swap. */}
+        <div key={day.iso} style={{ maxWidth: 820, margin: "0 auto", padding: "clamp(16px,3vw,26px)", animation: "jkk-fade .2s ease" }}>
+          {!day.empty && day.hidden > 0 && (
+            <div style={filterNote}>
+              <span>{day.hidden} kegiatan lain pada tanggal ini disembunyikan oleh pencarian.</span>
+              <button onClick={() => this.clearFilters()} style={linkBtn}>Tampilkan semua</button>
+            </div>
+          )}
           {day.empty && (
             <div style={{ textAlign: "center", padding: "70px 20px", color: "var(--text-3)" }}>
-              <div style={{ fontSize: 40, opacity: 0.5, marginBottom: 6 }}>◔</div>
-              <div style={{ fontSize: 16, fontWeight: 640, color: "var(--text-2)" }}>Tidak ada kegiatan pada tanggal ini</div>
-              <button onClick={() => this.openNewOn(day.iso)} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "11px 20px", fontSize: 15, fontWeight: 600, cursor: "pointer", marginTop: 16 }}>＋ Tambah Kegiatan</button>
+              <div style={{ fontSize: 40, opacity: 0.5, marginBottom: 6 }}>{day.dayEmpty ? "◔" : "⌕"}</div>
+              <div style={{ fontSize: 16, fontWeight: 640, color: "var(--text-2)" }}>
+                {day.dayEmpty
+                  ? "Tidak ada kegiatan pada tanggal ini"
+                  : "Tidak ada kegiatan yang cocok pada tanggal ini"}
+              </div>
+              {day.dayEmpty ? (
+                <button onClick={() => this.openNewOn(day.iso)} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "11px 20px", fontSize: 15, fontWeight: 600, cursor: "pointer", marginTop: 16 }}>＋ Tambah Kegiatan</button>
+              ) : (
+                <button onClick={() => this.clearFilters()} style={{ border: "1px solid var(--sep-2)", background: "var(--surface)", color: "var(--text)", borderRadius: 11, padding: "11px 20px", fontSize: 15, fontWeight: 600, cursor: "pointer", marginTop: 16 }}>Bersihkan pencarian</button>
+              )}
             </div>
           )}
           <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
@@ -2478,6 +2693,65 @@ const calArrow: CSSProperties = {
   fontSize: 18,
   cursor: "pointer",
   lineHeight: 1,
+};
+// Search feedback: spinner in the box, live result chip, and the note strip the
+// date-anchored views use to explain what the query is hiding.
+const searchSpinner: CSSProperties = {
+  position: "absolute",
+  left: 12,
+  top: "50%",
+  marginTop: -7,
+  width: 14,
+  height: 14,
+  borderRadius: "50%",
+  border: "2px solid var(--sep-2)",
+  borderTopColor: "var(--accent)",
+  animation: "jkk-spin .62s linear infinite",
+  pointerEvents: "none",
+};
+const chipSpinner: CSSProperties = {
+  width: 11,
+  height: 11,
+  borderRadius: "50%",
+  border: "2px solid var(--sep-2)",
+  borderTopColor: "var(--accent)",
+  animation: "jkk-spin .62s linear infinite",
+};
+const searchChip: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  flex: "none",
+  padding: "6px 11px",
+  borderRadius: 20,
+  background: "var(--fill)",
+  fontSize: 12.5,
+  fontWeight: 640,
+  fontVariantNumeric: "tabular-nums",
+  whiteSpace: "nowrap",
+};
+const filterNote: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  flexWrap: "wrap",
+  margin: "0 0 14px",
+  padding: "10px 14px",
+  borderRadius: 12,
+  background: "var(--accent-soft)",
+  color: "var(--text-2)",
+  fontSize: 13,
+  animation: "jkk-fade .25s ease",
+};
+const linkBtn: CSSProperties = {
+  border: "none",
+  background: "transparent",
+  color: "var(--accent)",
+  fontSize: 13,
+  fontWeight: 650,
+  cursor: "pointer",
+  padding: 0,
+  whiteSpace: "nowrap",
 };
 const fieldLabel: CSSProperties = { fontSize: 13, fontWeight: 640, color: "var(--text-2)" };
 const textInput: CSSProperties = {
