@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getData, saveData } from "@/lib/sheets";
+import { getData, revOf, saveData } from "@/lib/sheets";
 import { loadWorkbook, parseWorkbookMerge } from "@/lib/excel";
 import { ConfigError } from "@/lib/google";
 
@@ -38,6 +38,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       data: merged,
+      rev: revOf(merged),
       counts: {
         activities: merged.activities.length,
         categories: merged.categories.length,

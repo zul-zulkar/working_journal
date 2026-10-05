@@ -1,7 +1,7 @@
 "use client";
 
 import React, { CSSProperties } from "react";
-import type { Activity, Category, Evidence, Group } from "@/lib/types";
+import type { Activity, Category, Evidence, Group, JournalData } from "@/lib/types";
 import { ActivityItem, buildGroups, enrichActivity } from "@/lib/enrich";
 import {
   PALETTE,
@@ -22,9 +22,11 @@ import {
   validateGroupRange,
 } from "@/lib/format";
 import { ShareConfig, actsInRange, buildReport } from "@/lib/report";
+import { mergeJournal, sameData } from "@/lib/merge";
 import Lightbox, { LightboxState } from "./Lightbox";
 import ReportView from "./ReportView";
 import CategorySelect from "./CategorySelect";
+import { Collapse, ModalFrame, Presence, Segmented, runThemeTransition, stagger } from "./Motion";
 
 const WEEK_START: "sunday" | "monday" = "sunday";
 // Calendar events render as thin lines (not labelled bars) so more of them fit
@@ -39,10 +41,21 @@ const DEFAULT_VIEW: View = "list";
 // actually visible, short enough that results never feel late.
 const SEARCH_DEBOUNCE = 280;
 const PREFS_KEY = "jkk:prefs:v1";
+// Multi-device sync: how often a visible tab checks for changes made elsewhere
+// (it also checks the moment the tab regains focus), and how long rename-as-you-
+// type edits wait before saving so each keystroke isn't its own write.
+const POLL_MS = 15000;
+const TYPING_SAVE_DELAY = 700;
 
 type View = "list" | "grid" | "calendar" | "table" | "hourly";
+type NavDir = "next" | "prev" | "none";
 type Sort = "date-desc" | "date-asc" | "title";
 type TableCol = "date" | "time" | "cat" | "title" | "capaian";
+const SYNC_LABEL: Record<State["sync"], string> = {
+  ok: "Tersimpan · otomatis diperbarui dari perangkat lain",
+  saving: "Menyimpan…",
+  error: "Belum tersimpan — mencoba lagi",
+};
 const VIEW_LABEL: Record<View, string> = {
   list: "List",
   grid: "Grid",
@@ -105,6 +118,12 @@ type State = {
   shareToken: string | null;
   shareTokenBusy: boolean;
   toast: string | null;
+  /** Bumped per flash() so a repeated message still replays its entrance. */
+  toastSeq: number;
+  /** Which way the calendar month / per-jam day / day sheet last stepped. */
+  navDir: NavDir;
+  /** Save state shown as the dot on the logo. */
+  sync: "ok" | "saving" | "error";
 };
 
 export default class JurnalApp extends React.Component<{}, State> {
@@ -115,6 +134,46 @@ export default class JurnalApp extends React.Component<{}, State> {
   private shareTokenSeq = 0;
   private onResize = () => {
     if (this.mounted) this.setState({ width: window.innerWidth });
+  };
+  // ---- multi-device sync ----
+  // `base`/`serverRev` describe the server copy our state was last reconciled
+  // with. Local edits mark the doc dirty and are saved (debounced, one request
+  // in flight at a time) with baseRev; a 409 means another device saved first,
+  // so we three-way merge (lib/merge.ts) and retry. Polls only apply when there
+  // is nothing unsaved locally, and are discarded if an edit landed meanwhile.
+  private base: JournalData | null = null;
+  private serverRev: string | null = null;
+  private dirty = false;
+  private saving = false;
+  private polling = false;
+  private syncEpoch = 0;
+  private conflictStreak = 0;
+  private failStreak = 0;
+  private lastPollAt = 0;
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  private authLost = false;
+  private onVisible = () => {
+    if (document.visibilityState === "hidden") {
+      // Leaving (app switch, tab close): push pending edits out right away.
+      this.flushSave(true);
+    } else if (Date.now() - this.lastPollAt > 2000) {
+      this.poll();
+    }
+  };
+  private onFocus = () => {
+    if (Date.now() - this.lastPollAt > 2000) this.poll();
+  };
+  private onOnline = () => {
+    if (this.dirty) this.flushSave();
+    else this.poll();
+  };
+  private onBeforeUnload = (e: BeforeUnloadEvent) => {
+    if (!this.dirty && !this.saving) return;
+    this.flushSave(true);
+    e.preventDefault();
+    e.returnValue = "";
   };
   private onDocPaste = (e: ClipboardEvent) => {
     if (this.state.editorOpen) this.pasteImages(e);
@@ -211,6 +270,9 @@ export default class JurnalApp extends React.Component<{}, State> {
       shareToken: null,
       shareTokenBusy: false,
       toast: null,
+      toastSeq: 0,
+      navDir: "none",
+      sync: "ok",
     };
   }
 
@@ -219,6 +281,10 @@ export default class JurnalApp extends React.Component<{}, State> {
     window.addEventListener("resize", this.onResize);
     document.addEventListener("paste", this.onDocPaste);
     window.addEventListener("popstate", this.onPopState);
+    document.addEventListener("visibilitychange", this.onVisible);
+    window.addEventListener("focus", this.onFocus);
+    window.addEventListener("online", this.onOnline);
+    window.addEventListener("beforeunload", this.onBeforeUnload);
     this.load();
   }
   componentDidUpdate(_prevProps: {}, prevState: State) {
@@ -252,8 +318,15 @@ export default class JurnalApp extends React.Component<{}, State> {
     window.removeEventListener("resize", this.onResize);
     document.removeEventListener("paste", this.onDocPaste);
     window.removeEventListener("popstate", this.onPopState);
+    document.removeEventListener("visibilitychange", this.onVisible);
+    window.removeEventListener("focus", this.onFocus);
+    window.removeEventListener("online", this.onOnline);
+    window.removeEventListener("beforeunload", this.onBeforeUnload);
     if (this.shareTokenTimer) clearTimeout(this.shareTokenTimer);
     if (this.searchTimer) clearTimeout(this.searchTimer);
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    if (this.pollTimer) clearTimeout(this.pollTimer);
   }
 
   // ---------- persistence ----------
@@ -275,22 +348,25 @@ export default class JurnalApp extends React.Component<{}, State> {
   async load() {
     const prefs = this.readPrefs();
     try {
-      const res = await fetch("/api/data");
+      const res = await fetch("/api/data", { cache: "no-store" });
+      if (res.status === 401) return this.sessionExpired(true);
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || "Gagal memuat data dari server.");
       }
-      const data = await res.json();
+      const raw = await res.json();
+      const data = toJournal(raw);
+      this.base = data;
+      this.serverRev = typeof raw.rev === "string" ? raw.rev : null;
       this.setState({
         loaded: true,
         error: null,
-        activities: Array.isArray(data.activities) ? data.activities : [],
-        categories: Array.isArray(data.categories) ? data.categories : [],
-        groups: Array.isArray(data.groups) ? data.groups : [],
+        ...data,
         theme: prefs.theme || "light",
         view: prefs.view || DEFAULT_VIEW,
         sort: prefs.sort || "date-desc",
       });
+      this.schedulePoll();
     } catch (err) {
       this.setState({
         loaded: true,
@@ -299,37 +375,208 @@ export default class JurnalApp extends React.Component<{}, State> {
       });
     }
   }
-  /** Persist activities + categories + groups to Google Sheets (whole-document save). */
-  syncData(next?: { activities?: Activity[]; categories?: Category[]; groups?: Group[] }) {
-    const activities = next?.activities || this.state.activities;
-    const categories = next?.categories || this.state.categories;
-    const groups = next?.groups || this.state.groups;
-    fetch("/api/data", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ activities, categories, groups }),
-    })
-      .then(async (r) => {
-        if (!r.ok) {
-          const j = await r.json().catch(() => ({}));
-          throw new Error(j.error || "Gagal menyimpan.");
-        }
-      })
-      .catch((err) => this.flash(err.message || "Gagal menyimpan ke server"));
+  /** The domain data as it stands in state (what gets saved). */
+  domain(): JournalData {
+    const { activities, categories, groups } = this.state;
+    return { activities, categories, groups };
   }
-  /** setState for domain data, then persist to the server. */
-  commitData(patch: Partial<State>, cb?: () => void) {
+  /**
+   * setState for domain data, then persist to the server. Discrete actions save
+   * at once; `debounce` (ms) is for edit-as-you-type fields such as renames.
+   */
+  commitData(patch: Partial<State>, cb?: () => void, opts?: { debounce?: number }) {
     this.setState(patch as State, () => {
-      this.syncData();
+      this.queueSave(opts?.debounce || 0);
       if (cb) cb();
     });
   }
+  queueSave(delay = 0) {
+    this.dirty = true;
+    this.syncEpoch++;
+    if (this.state.sync !== "saving") this.setState({ sync: "saving" });
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      this.flushSave();
+    }, delay);
+  }
+  /** Send the current state (one PUT at a time; edits made meanwhile follow). */
+  async flushSave(leaving = false) {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    if (this.saving || !this.dirty || this.authLost) return;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    this.saving = true;
+    this.dirty = false;
+    const sent = this.domain();
+    const body = JSON.stringify({ ...sent, baseRev: this.serverRev });
+    let outcome: "ok" | "conflict" | "fail" | "auth" = "fail";
+    let failMsg = "Gagal menyimpan ke server";
+    try {
+      const res = await fetch("/api/data", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body,
+        // Lets the request outlive a closing tab (browsers cap keepalive bodies).
+        keepalive: leaving && body.length < 60000,
+      });
+      const j = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        outcome = "auth";
+      } else if (res.status === 409 && j.data) {
+        // Another device saved first: fold our edits onto theirs, then retry.
+        this.mergeRemote(toJournal(j.data), j.rev);
+        outcome = "conflict";
+      } else if (!res.ok) {
+        failMsg = j.error || failMsg;
+      } else {
+        this.base = sent;
+        this.serverRev = typeof j.rev === "string" ? j.rev : this.serverRev;
+        outcome = "ok";
+      }
+    } catch {
+      failMsg = "Tidak tersambung — perubahan disimpan saat koneksi kembali";
+    } finally {
+      this.saving = false;
+      this.syncEpoch++;
+    }
+    if (!this.mounted) return;
+
+    if (outcome === "ok") {
+      this.failStreak = 0;
+      this.conflictStreak = 0;
+      if (this.dirty) this.flushSave();
+      else this.setState({ sync: "ok" });
+    } else if (outcome === "conflict") {
+      this.failStreak = 0;
+      if (++this.conflictStreak > 4) {
+        this.dirty = true;
+        this.setState({ sync: "error" });
+        this.flash("Gagal menggabungkan perubahan — coba lagi");
+        return;
+      }
+      // Runs after mergeRemote's state update has committed (queued behind it).
+      this.setState({}, () => {
+        if (this.dirty) this.flushSave();
+        else this.setState({ sync: "ok" });
+      });
+    } else if (outcome === "auth") {
+      this.dirty = true;
+      this.sessionExpired();
+    } else {
+      this.dirty = true;
+      this.failStreak++;
+      this.setState({ sync: "error" });
+      if (this.failStreak === 1) this.flash(failMsg);
+      const wait = Math.min(30000, 2000 * 2 ** (this.failStreak - 1));
+      this.retryTimer = setTimeout(() => {
+        this.retryTimer = null;
+        this.flushSave();
+      }, wait);
+    }
+  }
+  /** Rebase local state onto `remote` (three-way, against our last base). */
+  mergeRemote(remote: JournalData, rev: string) {
+    const local = this.domain();
+    const merged = mergeJournal(this.base || remote, local, remote);
+    this.base = remote;
+    this.serverRev = rev;
+    this.dirty = !sameData(merged, remote);
+    this.setState(this.withValidFilter(merged) as State);
+  }
+  /** Adopt server data when nothing is pending locally. */
+  applyRemote(remote: JournalData, rev: string | null, notify: boolean) {
+    const changed = !sameData(remote, this.domain());
+    this.base = remote;
+    this.serverRev = rev;
+    if (!changed) return;
+    this.setState(this.withValidFilter(remote) as State);
+    if (notify) this.flash("Diperbarui dari perangkat lain");
+  }
+  /** Drop a Rencana Kinerja filter whose category no longer exists. */
+  withValidFilter(d: JournalData): Partial<State> & JournalData {
+    const f = this.state.filterCat;
+    const keep = f === "all" || d.categories.some((c) => c.id === f);
+    return keep ? d : { ...d, filterCat: "all" };
+  }
+  schedulePoll() {
+    if (this.pollTimer) clearTimeout(this.pollTimer);
+    this.pollTimer = setTimeout(() => {
+      this.pollTimer = null;
+      this.poll().finally(() => {
+        if (this.mounted) this.schedulePoll();
+      });
+    }, POLL_MS);
+  }
+  /** Pull changes saved from another device (cheap when nothing changed). */
+  async poll() {
+    if (!this.mounted || !this.state.loaded || this.state.error || this.authLost) return;
+    if (document.visibilityState === "hidden") return;
+    if (this.polling || this.saving || this.dirty) return;
+    this.polling = true;
+    this.lastPollAt = Date.now();
+    const epoch = this.syncEpoch;
+    try {
+      const res = await fetch(`/api/data?since=${encodeURIComponent(this.serverRev || "")}`, {
+        cache: "no-store",
+      });
+      if (res.status === 401) return this.sessionExpired();
+      if (!res.ok) return;
+      const j = await res.json();
+      // An edit or save happened while we were asking — that state is newer.
+      if (!this.mounted || epoch !== this.syncEpoch || this.saving || this.dirty) return;
+      if (this.state.sync === "error" && !this.failStreak) this.setState({ sync: "ok" });
+      if (j.unchanged) return;
+      this.applyRemote(toJournal(j), typeof j.rev === "string" ? j.rev : null, true);
+    } catch {
+      /* offline — the next tick (or the "online" event) tries again */
+    } finally {
+      this.polling = false;
+    }
+  }
+  /** Session cookie expired or revoked: send the owner back to the login page. */
+  sessionExpired(immediate = false) {
+    if (this.authLost) return;
+    this.authLost = true;
+    const go = () => window.location.replace("/login");
+    if (immediate) return go();
+    this.flash("Sesi berakhir — silakan masuk lagi");
+    setTimeout(go, 1400);
+  }
+  /** fetch() for the app's own API that turns a 401 into the login redirect. */
+  async api(input: string, init?: RequestInit): Promise<Response> {
+    const res = await fetch(input, init);
+    if (res.status === 401) {
+      this.sessionExpired();
+      throw new Error("Sesi berakhir — silakan masuk lagi");
+    }
+    return res;
+  }
+  async logout() {
+    if (
+      (this.dirty || this.saving) &&
+      !window.confirm("Ada perubahan yang belum tersimpan. Tetap keluar?")
+    )
+      return;
+    this.authLost = true;
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch {
+      /* the cookie is httpOnly — if this fails the session simply stays */
+    }
+    window.location.replace("/login");
+  }
   flash(msg: string) {
-    this.setState({ toast: msg });
+    this.setState((s) => ({ toast: msg, toastSeq: s.toastSeq + 1 }));
     if (this.toastTimer) clearTimeout(this.toastTimer);
     this.toastTimer = setTimeout(() => {
       if (this.mounted) this.setState({ toast: null });
-    }, 2200);
+    }, 2400);
   }
 
   // ---------- search ----------
@@ -405,8 +652,22 @@ export default class JurnalApp extends React.Component<{}, State> {
   /** Point the calendar month / per-jam day at a date that has a match. */
   jumpToMatch(iso: string) {
     const d = parseD(iso);
-    if (this.state.view === "hourly") this.setState({ hourlyDate: iso });
-    else this.setState({ calYear: d.getFullYear(), calMonth: d.getMonth() });
+    if (this.state.view === "hourly") {
+      this.setState({ hourlyDate: iso, navDir: dirBetween(this.state.hourlyDate, iso) });
+    } else {
+      this.setCalMonth(d.getFullYear(), d.getMonth());
+    }
+  }
+  /** Show another calendar month, sliding in from the side it lies on. */
+  setCalMonth(year: number, month: number) {
+    const { calYear, calMonth } = this.state;
+    const delta = year * 12 + month - (calYear * 12 + calMonth);
+    if (!delta) return;
+    this.setState({ calYear: year, calMonth: month, navDir: delta > 0 ? "next" : "prev" });
+  }
+  setHourlyDate(iso: string) {
+    if (!iso || iso === this.state.hourlyDate) return;
+    this.setState({ hourlyDate: iso, navDir: dirBetween(this.state.hourlyDate, iso) });
   }
 
   // ---------- filtering ----------
@@ -481,7 +742,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     if (!cur) return;
     const d = parseD(cur);
     d.setDate(d.getDate() + deltaDays);
-    this.setState({ dayView: toISO(d) });
+    this.setState({ dayView: toISO(d), navDir: deltaDays > 0 ? "next" : "prev" });
     try {
       window.scrollTo(0, 0);
     } catch {
@@ -634,8 +895,8 @@ export default class JurnalApp extends React.Component<{}, State> {
           cursor: "pointer",
           boxShadow: "0 1px 1.5px rgba(0,0,0,.14)",
           pointerEvents: "auto",
-          // Hits grow in when a query lands, so it is obvious which bars survived.
-          animation: q ? "jkk-hit .34s ease both" : undefined,
+          // Bars draw in week by week when a month (or a search hit) appears.
+          animation: `jkk-hit .4s var(--ease-out) ${q ? 0 : 80 + w * 35}ms backwards`,
         };
         bars.push({ title: seg.a.title, css, actId: seg.a.id });
       });
@@ -671,7 +932,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     this.setState((st) => {
       const d = parseD(st.hourlyDate);
       d.setDate(d.getDate() + deltaDays);
-      return { hourlyDate: toISO(d) };
+      return { hourlyDate: toISO(d), navDir: deltaDays > 0 ? "next" : "prev" };
     });
   }
   buildHourlyDay() {
@@ -699,7 +960,7 @@ export default class JurnalApp extends React.Component<{}, State> {
       seg.lane = lane;
       laneEnds[lane] = seg.endMin;
     });
-    const blocks = segs.map((seg) => {
+    const blocks = segs.map((seg, i) => {
       const laneCount =
         Math.max(...segs.filter((o) => o.startMin < seg.endMin && o.endMin > seg.startMin).map((o) => o.lane)) + 1;
       const c = catById(categories, seg.a.categoryId);
@@ -722,7 +983,8 @@ export default class JurnalApp extends React.Component<{}, State> {
         overflow: "hidden",
         cursor: "pointer",
         boxShadow: "0 1px 3px rgba(0,0,0,.16)",
-        animation: q ? "jkk-hit .34s ease both" : undefined,
+        // Blocks settle into place whenever the day (or a search) is shown.
+        animation: `jkk-hit .42s var(--ease-out) ${q ? 0 : 60 + Math.min(i, 10) * 30}ms backwards`,
       };
       return { id: seg.a.id, title: seg.a.title, timeLabel: timeLabel(seg.a), style };
     });
@@ -766,7 +1028,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     this.setState({ editorOpen: true, editingId: null, form: this.blankForm(iso) });
   }
   openDay(iso: string) {
-    this.setState({ dayView: iso, sidebarOpen: false });
+    this.setState({ dayView: iso, sidebarOpen: false, navDir: "none" });
     try {
       window.scrollTo(0, 0);
     } catch {
@@ -849,12 +1111,16 @@ export default class JurnalApp extends React.Component<{}, State> {
       !!f.linkDraft.trim()
     );
   }
-  /** Click-outside-the-panel close: confirm first if there are unsaved changes. */
-  requestCloseEditor() {
+  /**
+   * Click-outside / drag-down close: confirm first if there are unsaved changes.
+   * Returns whether the editor actually closed (the sheet springs back if not).
+   */
+  requestCloseEditor(): boolean {
     if (this.isFormDirty() && !window.confirm("Ada isian yang belum disimpan. Tutup dan buang perubahan?")) {
-      return;
+      return false;
     }
     this.closeEditor();
+    return true;
   }
   setForm(patch: Partial<FormState> | ((f: FormState) => Partial<FormState>)) {
     this.setState((s) => {
@@ -961,7 +1227,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     for (const it of items) {
       const fd = new FormData();
       fd.append("file", it.blob, it.name);
-      const res = await fetch("/api/upload", { method: "POST", body: fd });
+      const res = await this.api("/api/upload", { method: "POST", body: fd });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || "Gagal mengunggah gambar.");
@@ -1034,7 +1300,7 @@ export default class JurnalApp extends React.Component<{}, State> {
   // ---------- categories (Rencana Kinerja) ----------
   renameCat(id: string, name: string) {
     const cats = this.state.categories.map((c) => (c.id === id ? { ...c, name } : c));
-    this.commitData({ categories: cats });
+    this.commitData({ categories: cats }, undefined, { debounce: TYPING_SAVE_DELAY });
   }
   cycleColor(id: string) {
     const cats = this.state.categories.map((c) => {
@@ -1118,7 +1384,7 @@ export default class JurnalApp extends React.Component<{}, State> {
   }
   renameGroup(id: string, name: string) {
     const groups = this.state.groups.map((g) => (g.id === id ? { ...g, name } : g));
-    this.commitData({ groups });
+    this.commitData({ groups }, undefined, { debounce: TYPING_SAVE_DELAY });
   }
   updateGroupDates(id: string, patch: { startDate?: string; endDate?: string }) {
     const g = this.state.groups.find((x) => x.id === id);
@@ -1159,7 +1425,7 @@ export default class JurnalApp extends React.Component<{}, State> {
 
   // ---------- export / import (Excel .xlsx) ----------
   async downloadFile(url: string, fallbackName: string) {
-    const res = await fetch(url);
+    const res = await this.api(url);
     if (!res.ok) {
       const j = await res.json().catch(() => ({}));
       throw new Error(j.error || "Gagal mengunduh berkas.");
@@ -1210,22 +1476,27 @@ export default class JurnalApp extends React.Component<{}, State> {
     this.flash("Mengimpor…");
     const fd = new FormData();
     fd.append("file", file);
-    fetch("/api/import", { method: "POST", body: fd })
+    this.api("/api/import", { method: "POST", body: fd })
       .then(async (r) => {
         const j = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(j.error || "Gagal mengimpor.");
         return j as {
           data: { activities: Activity[]; categories: Category[]; groups: Group[] };
+          rev?: string;
           counts: { activities: number };
         };
       })
       .then((j) => {
-        // Server already persisted the merge — update local state directly.
-        this.setState({
-          activities: j.data.activities,
-          categories: j.data.categories,
-          groups: Array.isArray(j.data.groups) ? j.data.groups : this.state.groups,
-        });
+        // Server already persisted the merge. Adopt it — or, if edits are still
+        // waiting to be saved here, fold them on top and save the result.
+        const data = toJournal(j.data);
+        const rev = typeof j.rev === "string" ? j.rev : null;
+        if (this.dirty && rev) {
+          this.mergeRemote(data, rev);
+          this.setState({}, () => this.dirty && this.flushSave());
+        } else {
+          this.applyRemote(data, rev, false);
+        }
         this.flash(`Impor selesai — ${j.counts.activities} kegiatan`);
       })
       .catch((err) => this.flash(err.message || "Gagal mengimpor"));
@@ -1288,7 +1559,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     this.setState({ shareToken: null, shareTokenBusy: true });
     const seq = ++this.shareTokenSeq;
     this.shareTokenTimer = setTimeout(() => {
-      fetch("/api/share", {
+      this.api("/api/share", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(cfg),
@@ -1360,11 +1631,15 @@ export default class JurnalApp extends React.Component<{}, State> {
   }
 
   // ---------- theme / view ----------
-  toggleTheme() {
-    this.setState({ theme: this.state.theme === "dark" ? "light" : "dark" }, () => this.savePrefs());
+  /** Pass the click so the new theme reveals outward from the button. */
+  toggleTheme(e?: { clientX: number; clientY: number }) {
+    runThemeTransition(e, () =>
+      this.setState((s) => ({ theme: s.theme === "dark" ? "light" : "dark" }), () => this.savePrefs()),
+    );
   }
   setView(v: View) {
-    this.setState({ view: v }, () => this.savePrefs());
+    if (v === this.state.view) return;
+    this.setState({ view: v, navDir: "none" }, () => this.savePrefs());
   }
   setSort(v: Sort) {
     this.setState({ sort: v }, () => this.savePrefs());
@@ -1410,7 +1685,7 @@ export default class JurnalApp extends React.Component<{}, State> {
       width: 44,
       height: 26,
       borderRadius: 16,
-      transition: "background .2s",
+      transition: "background-color .3s ease",
       background: on ? "var(--accent)" : "var(--fill-2)",
       display: "inline-block",
       flex: "none",
@@ -1426,7 +1701,8 @@ export default class JurnalApp extends React.Component<{}, State> {
       borderRadius: "50%",
       background: "#fff",
       boxShadow: "0 1px 3px rgba(0,0,0,.3)",
-      transition: "transform .2s",
+      // Slight overshoot, like a physical toggle settling.
+      transition: "transform .42s var(--ease-spring)",
       transform: on ? "translateX(18px)" : "none",
     };
   }
@@ -1447,7 +1723,7 @@ export default class JurnalApp extends React.Component<{}, State> {
       return (
         <div data-theme={s.theme} style={rootStyle}>
           <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg)" }}>
-            <div style={{ width: 34, height: 34, borderRadius: "50%", border: "3px solid var(--fill-2)", borderTopColor: "var(--accent)", animation: "jkk-spin .8s linear infinite" }} />
+            <div className="jkk-spinner" style={{ width: 34, height: 34, borderRadius: "50%", border: "3px solid var(--fill-2)", borderTopColor: "var(--accent)", animation: "jkk-spin .8s linear infinite" }} />
           </div>
         </div>
       );
@@ -1466,23 +1742,27 @@ export default class JurnalApp extends React.Component<{}, State> {
         <div data-theme={s.theme} style={rootStyle}>
           <ReportView
             report={buildReport({ activities: s.activities, categories: s.categories, groups: s.groups }, s.shareCfg)}
-            onToggleTheme={() => this.toggleTheme()}
+            onToggleTheme={(e) => this.toggleTheme(e)}
             onBack={() => this.exitReport()}
           />
-          {s.toast && this.renderToast()}
+          {this.renderToast()}
         </div>
       );
     }
 
+    // Each overlay sits in a <Presence> so closing plays its exit animation
+    // (the last frame is kept mounted for a moment; see components/Motion.tsx).
     return (
       <div data-theme={s.theme} style={rootStyle}>
         {this.renderApp()}
-        {s.editorOpen && this.renderEditor()}
-        {s.manageOpen && this.renderManage()}
-        {s.shareOpen && this.renderShare()}
-        {s.dayView && this.renderDay()}
-        {s.lightbox && <Lightbox state={s.lightbox} onClose={() => this.lbClose()} />}
-        {s.toast && this.renderToast()}
+        <Presence show={!!s.dayView}>{s.dayView && this.renderDay()}</Presence>
+        <Presence show={s.manageOpen}>{s.manageOpen && this.renderManage()}</Presence>
+        <Presence show={s.editorOpen && !!s.form}>{s.editorOpen && this.renderEditor()}</Presence>
+        <Presence show={s.shareOpen && !!s.shareCfg}>{s.shareOpen && this.renderShare()}</Presence>
+        <Presence show={!!s.lightbox}>
+          {s.lightbox && <Lightbox state={s.lightbox} onClose={() => this.lbClose()} />}
+        </Presence>
+        {this.renderToast()}
       </div>
     );
   }
@@ -1507,9 +1787,27 @@ export default class JurnalApp extends React.Component<{}, State> {
   }
 
   renderToast() {
+    const s = this.state;
+    // Centred by a full-width wrapper (not translateX) so the spring-in keyframes
+    // can own `transform`. Keyed per flash so a new message pops in again.
     return (
-      <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 100, background: "rgba(30,30,32,.94)", color: "#fff", padding: "12px 20px", borderRadius: 13, fontSize: 14, fontWeight: 560, boxShadow: "0 12px 40px rgba(0,0,0,.35)", animation: "jkk-pop .25s ease", backdropFilter: "blur(20px)" }}>
-        {this.state.toast}
+      <Presence show={!!s.toast} exitMs={240}>
+        <div className="jkk-toast-wrap">
+          <div key={s.toastSeq} className="jkk-toast" role="status" style={{ background: "rgba(30,30,32,.94)", color: "#fff", padding: "12px 20px", borderRadius: 13, fontSize: 14, fontWeight: 560, boxShadow: "0 12px 40px rgba(0,0,0,.35)", backdropFilter: "blur(20px)", maxWidth: 440, textAlign: "center" }}>
+            {s.toast}
+          </div>
+        </div>
+      </Presence>
+    );
+  }
+
+  /** App mark with the sync-state dot (green saved · amber saving · red failed). */
+  renderLogo() {
+    const sync = this.state.sync;
+    return (
+      <div style={{ ...logoBox, position: "relative", flex: "none" }} title={SYNC_LABEL[sync]}>
+        J
+        <span className="jkk-sync-dot" data-state={sync} />
       </div>
     );
   }
@@ -1597,7 +1895,7 @@ export default class JurnalApp extends React.Component<{}, State> {
           {showSidebar && (
             <aside style={{ width: 266, flex: "none", borderRight: "1px solid var(--sep)", background: "var(--surface)", display: "flex", flexDirection: "column", height: "100dvh", position: "sticky", top: 0 }}>
               <div style={{ padding: "20px 18px 8px", display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={logoBox}>J</div>
+                {this.renderLogo()}
                 <div>
                   <div style={{ fontWeight: 720, fontSize: 16, letterSpacing: "-.02em", lineHeight: 1.1 }}>Jurnal Kegiatan</div>
                   <div style={{ fontSize: 11.5, color: "var(--text-3)" }}>Bukti Dukung SKP</div>
@@ -1612,7 +1910,8 @@ export default class JurnalApp extends React.Component<{}, State> {
                   <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(e) => this.importExcel(e)} style={{ display: "none" }} />
                 </label>
                 <button onClick={() => this.downloadTemplate()} style={sideFootBtn}>Unduh Template Excel</button>
-                <button onClick={() => this.toggleTheme()} style={sideFootBtn}>{s.theme === "dark" ? "Mode Terang" : "Mode Gelap"}</button>
+                <button onClick={(e) => this.toggleTheme(e)} style={sideFootBtn}>{s.theme === "dark" ? "Mode Terang" : "Mode Gelap"}</button>
+                <button onClick={() => this.logout()} style={{ ...sideFootBtn, color: "#FF3B30" }}>Keluar</button>
               </div>
             </aside>
           )}
@@ -1626,25 +1925,29 @@ export default class JurnalApp extends React.Component<{}, State> {
                   <span style={hamLine} />
                   <span style={hamLine} />
                 </button>
-                <div style={{ flex: 1, fontWeight: 720, fontSize: 17, letterSpacing: "-.02em" }}>Jurnal Kegiatan</div>
+                <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8, fontWeight: 720, fontSize: 17, letterSpacing: "-.02em" }}>
+                  Jurnal Kegiatan
+                  {/* Save state, mirrored from the desktop logo dot. */}
+                  <span className="jkk-sync-dot" data-state={s.sync} title={SYNC_LABEL[s.sync]} style={{ position: "static", flex: "none", width: 9, height: 9, border: "none" }} />
+                </div>
                 <button onClick={() => this.openShare()} style={{ border: "none", background: "var(--fill)", color: "var(--text)", height: 38, padding: "0 13px", borderRadius: 10, fontSize: 13.5, fontWeight: 600, cursor: "pointer" }}>Bagikan</button>
-                <button onClick={() => this.toggleTheme()} style={{ border: "none", background: "var(--fill)", color: "var(--text)", width: 38, height: 38, borderRadius: 10, fontSize: 15, cursor: "pointer" }}>◐</button>
+                <button onClick={(e) => this.toggleTheme(e)} aria-label="Ganti tema" style={{ border: "none", background: "var(--fill)", color: "var(--text)", width: 38, height: 38, borderRadius: 10, fontSize: 15, cursor: "pointer" }}>◐</button>
               </div>
             )}
 
             {/* toolbar */}
             <header className="jkk-noprint" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "12px clamp(14px,3vw,26px)", background: "var(--surface)", borderBottom: "1px solid var(--sep)", position: "sticky", top: 0, zIndex: 15, backdropFilter: "saturate(180%) blur(20px)" }}>
-              <div style={{ display: "flex", background: "var(--fill)", borderRadius: 10, padding: 2, flex: "none", overflowX: "auto", maxWidth: "100%" }}>
-                {(["list", "grid", "calendar", "table", "hourly"] as View[]).map((v) => (
-                  <button key={v} onClick={() => this.setView(v)} style={{ ...this.navStyle(s.view === v), flex: "none", whiteSpace: "nowrap" }}>
-                    {VIEW_LABEL[v]}
-                  </button>
-                ))}
-              </div>
+              <Segmented<View>
+                options={(["list", "grid", "calendar", "table", "hourly"] as View[]).map((v) => ({ value: v, label: VIEW_LABEL[v] }))}
+                value={s.view}
+                onChange={(v) => this.setView(v)}
+                style={{ display: "flex", background: "var(--fill)", borderRadius: 10, padding: 2, flex: "none", overflowX: "auto", maxWidth: "100%" }}
+                buttonStyle={(active) => ({ ...this.navStyle(active), flex: "none", whiteSpace: "nowrap" })}
+              />
               <div style={{ position: "relative", flex: 1, minWidth: 150, maxWidth: 360 }}>
                 {/* The magnifier turns into a spinner while the query settles. */}
                 {s.searching ? (
-                  <span style={searchSpinner} />
+                  <span className="jkk-spinner" style={searchSpinner} />
                 ) : (
                   <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: "var(--text-3)", fontSize: 15, pointerEvents: "none" }}>⌕</span>
                 )}
@@ -1652,17 +1955,20 @@ export default class JurnalApp extends React.Component<{}, State> {
                   value={s.search}
                   onChange={(e) => this.setSearch(e.target.value)}
                   placeholder="Cari kegiatan…"
-                  style={{ width: "100%", padding: s.search ? "9px 34px" : "9px 12px 9px 34px", borderRadius: 10, border: `1px solid ${s.searching ? "var(--accent)" : "var(--sep-2)"}`, background: "var(--bg)", color: "var(--text)", fontSize: 14, outline: "none", transition: "border-color .18s ease" }}
+                  className="jkk-field"
+                  style={{ width: "100%", padding: s.search ? "9px 34px" : "9px 12px 9px 34px", borderRadius: 10, border: `1px solid ${s.searching ? "var(--accent)" : "var(--sep-2)"}`, background: "var(--bg)", color: "var(--text)", fontSize: 14, outline: "none" }}
                 />
                 {!!s.search && (
-                  <button onClick={() => this.clearSearch()} aria-label="Bersihkan pencarian" title="Bersihkan pencarian" style={{ position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)", border: "none", background: "var(--fill-2)", color: "var(--text-2)", width: 21, height: 21, borderRadius: "50%", fontSize: 11, lineHeight: 1, cursor: "pointer", padding: 0 }}>✕</button>
+                  <span className="jkk-fade" style={{ position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)", display: "flex" }}>
+                    <button onClick={() => this.clearSearch()} aria-label="Bersihkan pencarian" title="Bersihkan pencarian" style={{ border: "none", background: "var(--fill-2)", color: "var(--text-2)", width: 21, height: 21, borderRadius: "50%", fontSize: 11, lineHeight: 1, cursor: "pointer", padding: 0 }}>✕</button>
+                  </span>
                 )}
               </div>
               {!!s.search && (
-                <span style={{ ...searchChip, color: s.searching ? "var(--text-2)" : hasResults ? "var(--accent)" : "#FF3B30" }}>
+                <span className="jkk-in" style={{ ...searchChip, color: s.searching ? "var(--text-2)" : hasResults ? "var(--accent)" : "#FF3B30" }}>
                   {s.searching ? (
                     <>
-                      <span style={chipSpinner} />
+                      <span className="jkk-spinner" style={chipSpinner} />
                       Mencari…
                     </>
                   ) : (
@@ -1673,7 +1979,7 @@ export default class JurnalApp extends React.Component<{}, State> {
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto", flex: "none" }}>
                 {showSidebar && (
                   <>
-                    <select value={s.sort} onChange={(e) => this.setSort(e.target.value as Sort)} style={{ border: "1px solid var(--sep-2)", background: "var(--bg)", color: "var(--text)", borderRadius: 10, padding: "9px 10px", fontSize: 13.5, cursor: "pointer", outline: "none" }}>
+                    <select className="jkk-field" value={s.sort} onChange={(e) => this.setSort(e.target.value as Sort)} style={{ border: "1px solid var(--sep-2)", background: "var(--bg)", color: "var(--text)", borderRadius: 10, padding: "9px 10px", fontSize: 13.5, cursor: "pointer", outline: "none" }}>
                       <option value="date-desc">Terbaru</option>
                       <option value="date-asc">Terlama</option>
                       <option value="title">Judul A–Z</option>
@@ -1687,20 +1993,21 @@ export default class JurnalApp extends React.Component<{}, State> {
               {/* Indeterminate scanning bar along the bottom edge of the toolbar. */}
               {s.searching && (
                 <div style={{ position: "absolute", left: 0, right: 0, bottom: -1, height: 2, overflow: "hidden", pointerEvents: "none" }}>
-                  <div style={{ width: "38%", height: "100%", background: "var(--accent)", borderRadius: 2, animation: "jkk-scan 1.05s ease-in-out infinite" }} />
+                  <div className="jkk-spinner" style={{ width: "38%", height: "100%", background: "var(--accent)", borderRadius: 2, animation: "jkk-scan 1.05s ease-in-out infinite" }} />
                 </div>
               )}
             </header>
 
             <main style={{ padding: "clamp(14px,2.5vw,26px)", flex: 1 }}>
-              {/* Keyed on the applied query so every view replays its entrance
-                  the moment a search lands, and dimmed while one is pending. */}
+              {/* Keyed on the view + applied query so switching views or landing
+                  a search replays the entrance (cards rise in, staggered), and
+                  dimmed while a search is pending. */}
               <div
-                key={`q:${s.searchApplied}`}
+                key={`${s.view}|q:${s.searchApplied}`}
+                className="jkk-view"
                 style={{
                   opacity: s.searching ? 0.45 : 1,
                   transition: "opacity .18s ease",
-                  animation: s.searchApplied ? "jkk-fade .28s ease" : undefined,
                 }}
               >
                 {s.view === "list" && this.renderList(filtered, hasResults)}
@@ -1714,15 +2021,15 @@ export default class JurnalApp extends React.Component<{}, State> {
         </div>
 
         {/* mobile sidebar sheet */}
-        {isMobile && s.sidebarOpen && (
-          <div onClick={() => this.setState({ sidebarOpen: false })} style={{ position: "fixed", inset: 0, zIndex: 40, background: "var(--scrim)", animation: "jkk-fade .2s ease" }}>
-            <aside onClick={(e) => e.stopPropagation()} style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "82%", maxWidth: 300, background: "var(--surface)", display: "flex", flexDirection: "column", animation: "jkk-slide .28s cubic-bezier(.32,.72,0,1)", boxShadow: "var(--shadow-lg)" }}>
+        <Presence show={isMobile && s.sidebarOpen}>
+          <div className="jkk-scrim" onClick={() => this.setState({ sidebarOpen: false })} style={{ position: "fixed", inset: 0, zIndex: 40 }}>
+            <aside className="jkk-drawer" onClick={(e) => e.stopPropagation()} style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "82%", maxWidth: 300, background: "var(--surface)", display: "flex", flexDirection: "column", boxShadow: "var(--shadow-lg)" }}>
               <div style={{ padding: "20px 18px 8px", display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={logoBox}>J</div>
+                {this.renderLogo()}
                 <div style={{ fontWeight: 720, fontSize: 16, letterSpacing: "-.02em", flex: 1 }}>Jurnal Kegiatan</div>
-                <button onClick={() => this.setState({ sidebarOpen: false })} style={{ border: "none", background: "var(--fill)", color: "var(--text)", width: 32, height: 32, borderRadius: "50%", fontSize: 15, cursor: "pointer" }}>✕</button>
+                <button onClick={() => this.setState({ sidebarOpen: false })} aria-label="Tutup menu" style={{ border: "none", background: "var(--fill)", color: "var(--text)", width: 32, height: 32, borderRadius: "50%", fontSize: 15, cursor: "pointer" }}>✕</button>
               </div>
-              <div style={{ padding: "8px 10px", overflow: "auto", flex: 1 }}>{this.renderNav(true)}</div>
+              <div style={{ padding: "8px 10px", overflow: "auto", flex: 1, overscrollBehavior: "contain" }}>{this.renderNav(true)}</div>
               <div style={{ padding: 10, borderTop: "1px solid var(--sep)", display: "flex", flexDirection: "column", gap: 1 }}>
                 <button onClick={() => this.openManage()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Kelola Rencana Kinerja & Periode</button>
                 <button onClick={() => this.exportExcel()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Export Excel (.xlsx)</button>
@@ -1731,13 +2038,14 @@ export default class JurnalApp extends React.Component<{}, State> {
                   <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(e) => this.importExcel(e)} style={{ display: "none" }} />
                 </label>
                 <button onClick={() => this.downloadTemplate()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Unduh Template Excel</button>
+                <button onClick={() => this.logout()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px", color: "#FF3B30" }}>Keluar</button>
               </div>
             </aside>
           </div>
-        )}
+        </Presence>
 
         {/* Floating action button — reachable add on mobile without going to the top */}
-        {isMobile && !this.overlayOpen(s) && (
+        <Presence show={isMobile && !this.overlayOpen(s)} exitMs={240}>
           <button
             onClick={() => this.openNew()}
             className="jkk-fab"
@@ -1747,7 +2055,7 @@ export default class JurnalApp extends React.Component<{}, State> {
           >
             ＋
           </button>
-        )}
+        </Presence>
       </>
     );
   }
@@ -1756,29 +2064,32 @@ export default class JurnalApp extends React.Component<{}, State> {
   renderList(filtered: Activity[], hasResults: boolean) {
     if (!hasResults) return this.renderEmpty();
     const groups = buildGroups(filtered, this.state.categories, this.state.sort === "date-asc");
+    // One running index across groups, so the cascade flows top to bottom.
+    let n = 0;
     return (
       <div style={{ maxWidth: 880, margin: "0 auto", display: "flex", flexDirection: "column", gap: 26 }}>
         {groups.map((g) => (
           <section key={g.key}>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 9, padding: "2px 2px 12px" }}>
+            <div className="jkk-rise" style={{ display: "flex", alignItems: "baseline", gap: 9, padding: "2px 2px 12px", ...stagger(n) }}>
               <h2 style={{ fontSize: 15, fontWeight: 700, margin: 0, textTransform: "capitalize", letterSpacing: "-.01em" }}>{g.label}</h2>
               <span style={{ color: "var(--text-3)", fontSize: 13 }}>{g.countLabel}</span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
-              {g.items.map((it) => this.renderListCard(it))}
+              {g.items.map((it) => this.renderListCard(it, n++))}
             </div>
           </section>
         ))}
       </div>
     );
   }
-  renderListCard(it: ActivityItem) {
+  /** `idx` staggers the entrance; cards added later (e.g. synced in) just rise. */
+  renderListCard(it: ActivityItem, idx = 0) {
     return (
       <article
         key={it.id}
-        className="jkk-card"
+        className="jkk-card jkk-rise"
         onClick={() => this.openEdit(it.id)}
-        style={{ background: "var(--surface)", border: "1px solid var(--sep)", borderRadius: 15, padding: "15px 17px", boxShadow: "var(--shadow)", cursor: "pointer", display: "flex", gap: 15 }}
+        style={{ background: "var(--surface)", border: "1px solid var(--sep)", borderRadius: 15, padding: "15px 17px", boxShadow: "var(--shadow)", cursor: "pointer", display: "flex", gap: 15, ...stagger(idx) }}
       >
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7, flexWrap: "wrap" }}>
@@ -1815,8 +2126,8 @@ export default class JurnalApp extends React.Component<{}, State> {
     const items = filtered.map((a) => enrichActivity(a, this.state.categories));
     return (
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(258px,1fr))", gap: 16 }}>
-        {items.map((it) => (
-          <article key={it.id} className="jkk-card-grid" onClick={() => this.openEdit(it.id)} style={{ background: "var(--surface)", border: "1px solid var(--sep)", borderRadius: 16, overflow: "hidden", boxShadow: "var(--shadow)", cursor: "pointer", display: "flex", flexDirection: "column" }}>
+        {items.map((it, i) => (
+          <article key={it.id} className="jkk-card-grid jkk-rise" onClick={() => this.openEdit(it.id)} style={{ background: "var(--surface)", border: "1px solid var(--sep)", borderRadius: 16, overflow: "hidden", boxShadow: "var(--shadow)", cursor: "pointer", display: "flex", flexDirection: "column", ...stagger(i, 32) }}>
             {it.hasCover ? (
               <button onClick={(e) => { e.stopPropagation(); this.openLightbox(it.images, 0, it.title); }} style={{ height: 152, border: "none", backgroundColor: "var(--fill)", backgroundSize: "cover", backgroundPosition: "center", cursor: "zoom-in", position: "relative", padding: 0, backgroundImage: `url('${it.cover}')` }}>
                 {it.imgCountMore && <span style={countBadge}>{it.imgCountLabel}</span>}
@@ -1881,7 +2192,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     const items = this.sortTableItems(filtered.map((a) => enrichActivity(a, this.state.categories)));
     return (
       <div style={{ maxWidth: 1080, margin: "0 auto" }}>
-        <div style={{ background: "var(--surface)", border: "1px solid var(--sep)", borderRadius: 14, overflow: "auto", boxShadow: "var(--shadow)" }}>
+        <div className="jkk-rise" style={{ background: "var(--surface)", border: "1px solid var(--sep)", borderRadius: 14, overflow: "auto", boxShadow: "var(--shadow)" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr>
@@ -1895,7 +2206,7 @@ export default class JurnalApp extends React.Component<{}, State> {
             </thead>
             <tbody>
               {items.map((it, i) => (
-                <tr key={it.id} onClick={() => this.openEdit(it.id)} className="jkk-table-row" style={{ cursor: "pointer" }}>
+                <tr key={it.id} onClick={() => this.openEdit(it.id)} className="jkk-table-row jkk-row-in" style={{ cursor: "pointer", ...stagger(i, 22, 16) }}>
                   <td style={{ ...mainTableTd, color: "var(--text-3)" }}>{i + 1}</td>
                   <td style={{ ...mainTableTd, whiteSpace: "nowrap" }}>{it.dateLabel}</td>
                   <td style={{ ...mainTableTd, whiteSpace: "nowrap", color: "var(--text-2)" }}>{it.timeLabel || "—"}</td>
@@ -1933,14 +2244,17 @@ export default class JurnalApp extends React.Component<{}, State> {
           <div style={{ flex: 1 }} />
           <input
             type="date"
+            className="jkk-field"
             value={day.iso}
-            onChange={(e) => e.target.value && this.setState({ hourlyDate: e.target.value })}
+            onChange={(e) => this.setHourlyDate(e.target.value)}
             style={{ ...smallDateInput, flex: "none" }}
           />
-          <button onClick={() => this.setState({ hourlyDate: todayISO() })} style={calNavBtn}>Hari Ini</button>
-          <button onClick={() => this.shiftHourlyDate(-1)} style={calArrow}>‹</button>
-          <button onClick={() => this.shiftHourlyDate(1)} style={calArrow}>›</button>
+          <button onClick={() => this.setHourlyDate(todayISO())} style={calNavBtn}>Hari Ini</button>
+          <button onClick={() => this.shiftHourlyDate(-1)} style={calArrow} aria-label="Hari sebelumnya">‹</button>
+          <button onClick={() => this.shiftHourlyDate(1)} style={calArrow} aria-label="Hari berikutnya">›</button>
         </div>
+        {/* Keyed on the date: stepping days slides the new one in. */}
+        <div key={day.iso} className={`jkk-nav-${this.state.navDir}`}>
 
         {day.hasAny && day.hidden > 0 && (
           <div style={filterNote}>
@@ -2003,10 +2317,11 @@ export default class JurnalApp extends React.Component<{}, State> {
           <div style={{ marginTop: 18 }}>
             <div style={{ fontSize: 13, fontWeight: 640, color: "var(--text-2)", marginBottom: 9 }}>Tanpa jam ({day.noTime.length})</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
-              {day.noTime.map((it) => this.renderListCard(it))}
+              {day.noTime.map((it, i) => this.renderListCard(it, i))}
             </div>
           </div>
         )}
+        </div>
       </div>
     );
   }
@@ -2025,9 +2340,9 @@ export default class JurnalApp extends React.Component<{}, State> {
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
           <h2 style={{ fontSize: 22, fontWeight: 720, margin: 0, letterSpacing: "-.025em", textTransform: "capitalize" }}>{cal.label}</h2>
           <div style={{ flex: 1 }} />
-          <button onClick={() => { const t = new Date(); this.setState({ calYear: t.getFullYear(), calMonth: t.getMonth() }); }} style={calNavBtn}>Hari Ini</button>
-          <button onClick={() => this.setState((st) => { const d = new Date(st.calYear, st.calMonth - 1, 1); return { calYear: d.getFullYear(), calMonth: d.getMonth() }; })} style={calArrow}>‹</button>
-          <button onClick={() => this.setState((st) => { const d = new Date(st.calYear, st.calMonth + 1, 1); return { calYear: d.getFullYear(), calMonth: d.getMonth() }; })} style={calArrow}>›</button>
+          <button onClick={() => { const t = new Date(); this.setCalMonth(t.getFullYear(), t.getMonth()); }} style={calNavBtn}>Hari Ini</button>
+          <button onClick={() => { const d = new Date(this.state.calYear, this.state.calMonth - 1, 1); this.setCalMonth(d.getFullYear(), d.getMonth()); }} style={calArrow} aria-label="Bulan sebelumnya">‹</button>
+          <button onClick={() => { const d = new Date(this.state.calYear, this.state.calMonth + 1, 1); this.setCalMonth(d.getFullYear(), d.getMonth()); }} style={calArrow} aria-label="Bulan berikutnya">›</button>
         </div>
         {!!q && (
           <div style={filterNote}>
@@ -2044,6 +2359,8 @@ export default class JurnalApp extends React.Component<{}, State> {
             <button onClick={() => this.clearFilters()} style={linkBtn}>Bersihkan</button>
           </div>
         )}
+        {/* Keyed on the month: the new month slides in from where it lies. */}
+        <div key={`${this.state.calYear}-${this.state.calMonth}`} className={`jkk-nav-${this.state.navDir}`}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", background: "var(--surface)", border: "1px solid var(--sep)", borderBottom: "none", borderRadius: "14px 14px 0 0", overflow: "hidden" }}>
           {cal.weekdays.map((wd) => (
             <div key={wd} style={{ padding: "9px 8px", fontSize: 12, fontWeight: 680, color: "var(--text-3)", borderBottom: "1px solid var(--sep)" }}>{wd}</div>
@@ -2054,7 +2371,7 @@ export default class JurnalApp extends React.Component<{}, State> {
             <div key={wi} style={{ position: "relative" }}>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", minHeight: wk.minH }}>
                 {wk.days.map((d) => (
-                  <button key={d.iso} onClick={() => this.openDay(d.iso)} style={d.cellStyle}>
+                  <button key={d.iso} className="jkk-noscale jkk-cal-cell" onClick={() => this.openDay(d.iso)} style={d.cellStyle}>
                     <span style={d.numStyle}>{d.num}</span>
                   </button>
                 ))}
@@ -2073,6 +2390,7 @@ export default class JurnalApp extends React.Component<{}, State> {
               </div>
             </div>
           ))}
+        </div>
         </div>
         <p style={{ margin: "13px 2px", color: "var(--text-3)", fontSize: 12.5 }}>Klik tanggal untuk menambah kegiatan · arahkan kursor ke garis untuk lihat judul, klik untuk membuka.</p>
       </div>
@@ -2110,7 +2428,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     const isMobile = this.state.width < 860;
     const isToday = day.iso === todayISO();
     return (
-      <div style={{ position: "fixed", inset: 0, zIndex: 45, background: "var(--bg)", overflow: "auto", animation: "jkk-fade .25s ease" }}>
+      <div className="jkk-page" style={{ position: "fixed", inset: 0, zIndex: 45, background: "var(--bg)", overflow: "auto", overscrollBehavior: "contain" }}>
         <div style={{ position: "sticky", top: 0, zIndex: 5, display: "flex", alignItems: "center", gap: 12, padding: "12px clamp(14px,4vw,26px)", background: "var(--surface)", borderBottom: "1px solid var(--sep)", backdropFilter: "saturate(180%) blur(20px)" }}>
           <button onClick={() => this.closeDay()} style={backBtn} title="Kembali ke kalender">{isMobile ? "‹" : "‹ Kalender"}</button>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -2120,13 +2438,13 @@ export default class JurnalApp extends React.Component<{}, State> {
           {/* Step day by day without bouncing back to the calendar. */}
           <button onClick={() => this.shiftDayView(-1)} style={calArrow} title="Hari sebelumnya" aria-label="Hari sebelumnya">‹</button>
           {!isToday && !isMobile && (
-            <button onClick={() => this.setState({ dayView: todayISO() })} style={calNavBtn}>Hari Ini</button>
+            <button onClick={() => this.setState({ dayView: todayISO(), navDir: dirBetween(day.iso, todayISO()) })} style={calNavBtn}>Hari Ini</button>
           )}
           <button onClick={() => this.shiftDayView(1)} style={calArrow} title="Hari berikutnya" aria-label="Hari berikutnya">›</button>
           <button onClick={() => this.openNewOn(day.iso)} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 10, padding: isMobile ? "9px 12px" : "9px 15px", fontSize: 14, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>＋{isMobile ? "" : " Tambah"}</button>
         </div>
-        {/* Keyed on the date so stepping days is visible, not a silent swap. */}
-        <div key={day.iso} style={{ maxWidth: 820, margin: "0 auto", padding: "clamp(16px,3vw,26px)", animation: "jkk-fade .2s ease" }}>
+        {/* Keyed on the date so stepping days slides, not a silent swap. */}
+        <div key={day.iso} className={`jkk-nav-${this.state.navDir}`} style={{ maxWidth: 820, margin: "0 auto", padding: "clamp(16px,3vw,26px)" }}>
           {!day.empty && day.hidden > 0 && (
             <div style={filterNote}>
               <span>{day.hidden} kegiatan lain pada tanggal ini disembunyikan oleh pencarian.</span>
@@ -2149,7 +2467,7 @@ export default class JurnalApp extends React.Component<{}, State> {
             </div>
           )}
           <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
-            {day.items.map((it) => this.renderListCard(it))}
+            {day.items.map((it, i) => this.renderListCard(it, i))}
           </div>
         </div>
       </div>
@@ -2166,13 +2484,17 @@ export default class JurnalApp extends React.Component<{}, State> {
     const rangeEnd = f.isRange ? f.endDate : f.startDate;
     const availableCats = categoriesInRange(s.categories, s.groups, f.startDate, rangeEnd);
     return (
-      <div onClick={() => this.requestCloseEditor()} style={overlay(isMobile)}>
-        <div onClick={(e) => e.stopPropagation()} style={modalCard(isMobile)}>
+      <ModalFrame
+        isMobile={isMobile}
+        onRequestClose={() => this.requestCloseEditor()}
+        overlayStyle={overlay(isMobile)}
+        cardStyle={modalCard(isMobile)}
+      >
           <header style={modalHeader}>
             <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-.02em", flex: 1 }}>{s.editingId ? "Ubah Kegiatan" : f.isDuplicate ? "Duplikat Kegiatan" : "Kegiatan Baru"}</h2>
             <button onClick={() => this.closeEditor()} style={closeBtn}>✕</button>
           </header>
-          <div style={{ padding: 20, overflow: "auto", flex: 1 }}>
+          <div style={{ padding: 20, overflow: "auto", flex: 1, overscrollBehavior: "contain" }}>
             {/* Rencana Kinerja — daftar bergantung pada tanggal kegiatan */}
             <div style={{ marginBottom: 17 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 0 8px" }}>
@@ -2208,16 +2530,16 @@ export default class JurnalApp extends React.Component<{}, State> {
                 </button>
               </div>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <input type="date" value={f.startDate} onChange={(e) => this.setForm((ff) => ({ startDate: e.target.value, endDate: !ff.isRange || ff.endDate < e.target.value ? e.target.value : ff.endDate }))} style={dateInput} />
+                <input type="date" className="jkk-field" value={f.startDate} onChange={(e) => this.setForm((ff) => ({ startDate: e.target.value, endDate: !ff.isRange || ff.endDate < e.target.value ? e.target.value : ff.endDate }))} style={dateInput} />
                 {f.isRange && (
                   <>
-                    <span style={{ color: "var(--text-3)" }}>→</span>
-                    <input type="date" value={f.endDate} onChange={(e) => this.setForm({ endDate: e.target.value })} style={dateInput} />
+                    <span className="jkk-in" style={{ color: "var(--text-3)" }}>→</span>
+                    <input type="date" className="jkk-field jkk-in" value={f.endDate} onChange={(e) => this.setForm({ endDate: e.target.value })} style={dateInput} />
                   </>
                 )}
               </div>
               {!f.startDate && (
-                <div style={{ marginTop: 6, fontSize: 12, color: "#FF9F0A", lineHeight: 1.4 }}>
+                <div className="jkk-in" style={{ marginTop: 6, fontSize: 12, color: "#FF9F0A", lineHeight: 1.4 }}>
                   ⚠︎ Tanggal masih kosong — isi dulu sebelum menyimpan.
                 </div>
               )}
@@ -2231,32 +2553,32 @@ export default class JurnalApp extends React.Component<{}, State> {
                   Tambah jam{this.Switch(f.hasTime)}
                 </button>
               </div>
-              {f.hasTime && (
+              <Collapse open={f.hasTime}>
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <input type="time" value={f.startTime} onChange={(e) => this.setForm({ startTime: e.target.value })} style={dateInput} />
+                  <input type="time" className="jkk-field" value={f.startTime} onChange={(e) => this.setForm({ startTime: e.target.value })} style={dateInput} />
                   <span style={{ color: "var(--text-3)" }}>→</span>
-                  <input type="time" value={f.endTime} onChange={(e) => this.setForm({ endTime: e.target.value })} style={dateInput} />
+                  <input type="time" className="jkk-field" value={f.endTime} onChange={(e) => this.setForm({ endTime: e.target.value })} style={dateInput} />
                 </div>
-              )}
+              </Collapse>
             </div>
 
             {/* Kegiatan */}
             <div style={{ marginBottom: 17 }}>
               <label style={{ ...fieldLabel, display: "block", margin: "0 0 7px" }}>Kegiatan</label>
-              <input value={f.title} onChange={(e) => this.setForm({ title: e.target.value })} placeholder="Nama kegiatan" style={textInput} />
+              <input className="jkk-field" value={f.title} onChange={(e) => this.setForm({ title: e.target.value })} placeholder="Nama kegiatan" style={textInput} />
             </div>
 
             {/* Capaian */}
             <div style={{ marginBottom: 17 }}>
               <label style={{ ...fieldLabel, display: "block", margin: "0 0 7px" }}>Capaian</label>
-              <textarea value={f.capaian} onChange={(e) => this.setForm({ capaian: e.target.value })} rows={4} placeholder="Jelaskan capaian / hasil pekerjaan…" style={{ ...textInput, lineHeight: 1.5 }} />
+              <textarea className="jkk-field" value={f.capaian} onChange={(e) => this.setForm({ capaian: e.target.value })} rows={4} placeholder="Jelaskan capaian / hasil pekerjaan…" style={{ ...textInput, lineHeight: 1.5 }} />
             </div>
 
             {/* Bukti Dukung */}
             <div>
               <label style={{ ...fieldLabel, display: "block", margin: "0 0 7px" }}>Bukti Dukung</label>
               <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-                <input value={f.linkDraft} onChange={(e) => this.setForm({ linkDraft: e.target.value })} placeholder="Tempel link (Drive, dsb.)" style={{ ...textInput, fontSize: 14, padding: "10px 12px", borderRadius: 10 }} />
+                <input className="jkk-field" value={f.linkDraft} onChange={(e) => this.setForm({ linkDraft: e.target.value })} placeholder="Tempel link (Drive, dsb.)" style={{ ...textInput, fontSize: 14, padding: "10px 12px", borderRadius: 10 }} />
                 <button onClick={() => this.addLink()} style={{ border: "none", background: "var(--fill-2)", color: "var(--text)", borderRadius: 10, padding: "0 15px", fontSize: 14, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>Tambah</button>
               </div>
               <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, padding: 14, border: "1.5px dashed var(--sep-2)", borderRadius: 12, cursor: "pointer", color: "var(--text-2)", fontSize: 14, fontWeight: 500, marginBottom: 10, textAlign: "center" }}>
@@ -2267,7 +2589,7 @@ export default class JurnalApp extends React.Component<{}, State> {
               {f.evidence.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {f.evidence.map((ev) => (
-                    <div key={ev.id} style={{ display: "flex", alignItems: "center", gap: 11, padding: "8px 10px", border: "1px solid var(--sep)", borderRadius: 11, background: "var(--surface-2)" }}>
+                    <div key={ev.id} className="jkk-in" style={{ display: "flex", alignItems: "center", gap: 11, padding: "8px 10px", border: "1px solid var(--sep)", borderRadius: 11, background: "var(--surface-2)" }}>
                       {ev.type === "image" ? (
                         <span style={{ width: 42, height: 42, borderRadius: 8, flex: "none", backgroundColor: "var(--fill)", backgroundSize: "cover", backgroundPosition: "center", backgroundImage: `url('${imageUrl(ev)}')` }} />
                       ) : (
@@ -2294,8 +2616,7 @@ export default class JurnalApp extends React.Component<{}, State> {
             <button onClick={() => this.closeEditor()} style={secondaryBtn}>Batal</button>
             <button onClick={() => this.saveForm()} style={primaryBtn}>Simpan</button>
           </footer>
-        </div>
-      </div>
+      </ModalFrame>
     );
   }
 
@@ -2323,7 +2644,7 @@ export default class JurnalApp extends React.Component<{}, State> {
       .slice()
       .sort((a, b) => (a.startDate < b.startDate ? -1 : a.startDate > b.startDate ? 1 : 0));
     return (
-      <div style={{ position: "fixed", inset: 0, zIndex: 55, background: "var(--bg)", overflow: "auto", animation: "jkk-fade .25s ease" }}>
+      <div className="jkk-page" style={{ position: "fixed", inset: 0, zIndex: 55, background: "var(--bg)", overflow: "auto", overscrollBehavior: "contain" }}>
         <div style={{ position: "sticky", top: 0, zIndex: 5, display: "flex", alignItems: "center", gap: 12, padding: "12px clamp(14px,4vw,26px)", background: "var(--surface)", borderBottom: "1px solid var(--sep)", backdropFilter: "saturate(180%) blur(20px)" }}>
           <button onClick={() => this.closeManage()} style={backBtn}>‹ Kembali</button>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -2348,10 +2669,10 @@ export default class JurnalApp extends React.Component<{}, State> {
                   Belum ada periode. Tambahkan periode pertama di bawah.
                 </div>
               )}
-              {orderedGroups.map((g) => {
+              {orderedGroups.map((g, i) => {
                 const catCount = s.categories.filter((c) => c.groupId === g.id).length;
                 return (
-                  <div key={g.id} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, padding: "12px 14px", border: "1px solid var(--sep)", borderRadius: 14, background: "var(--surface-2)" }}>
+                  <div key={g.id} className="jkk-rise" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, padding: "12px 14px", border: "1px solid var(--sep)", borderRadius: 14, background: "var(--surface-2)", ...stagger(i, 40) }}>
                     <input
                       value={g.name}
                       onChange={(e) => this.renameGroup(g.id, e.target.value)}
@@ -2359,9 +2680,9 @@ export default class JurnalApp extends React.Component<{}, State> {
                       style={{ flex: "1 1 180px", minWidth: 0, border: "none", background: "transparent", color: "var(--text)", fontSize: 15, fontWeight: 640, outline: "none" }}
                     />
                     <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                      <input type="date" value={g.startDate} onChange={(e) => this.updateGroupDates(g.id, { startDate: e.target.value })} style={smallDateInput} />
+                      <input type="date" className="jkk-field" value={g.startDate} onChange={(e) => this.updateGroupDates(g.id, { startDate: e.target.value })} style={smallDateInput} />
                       <span style={{ color: "var(--text-3)" }}>→</span>
-                      <input type="date" value={g.endDate} onChange={(e) => this.updateGroupDates(g.id, { endDate: e.target.value })} style={smallDateInput} />
+                      <input type="date" className="jkk-field" value={g.endDate} onChange={(e) => this.updateGroupDates(g.id, { endDate: e.target.value })} style={smallDateInput} />
                     </div>
                     <span style={{ fontSize: 12, color: "var(--text-3)", flex: "none" }}>{catCount} RK</span>
                     <button onClick={() => this.deleteGroup(g.id)} title="Hapus periode" style={{ border: "none", background: "var(--fill)", color: "var(--text-2)", width: 30, height: 30, borderRadius: "50%", fontSize: 13, cursor: "pointer", flex: "none" }}>✕</button>
@@ -2374,18 +2695,19 @@ export default class JurnalApp extends React.Component<{}, State> {
               <label style={{ ...fieldLabel, display: "block", margin: "0 0 10px" }}>Tambah periode baru</label>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
                 <input
+                  className="jkk-field"
                   value={gf.name}
                   onChange={(e) => this.setGroupForm({ name: e.target.value })}
                   placeholder="Nama periode (mis. Semester I 2026)"
                   style={{ ...textInput, flex: "1 1 200px" }}
                 />
-                <input type="date" value={gf.startDate} onChange={(e) => this.setGroupForm({ startDate: e.target.value })} style={smallDateInput} />
+                <input type="date" className="jkk-field" value={gf.startDate} onChange={(e) => this.setGroupForm({ startDate: e.target.value })} style={smallDateInput} />
                 <span style={{ color: "var(--text-3)" }}>→</span>
-                <input type="date" value={gf.endDate} onChange={(e) => this.setGroupForm({ endDate: e.target.value })} style={smallDateInput} />
+                <input type="date" className="jkk-field" value={gf.endDate} onChange={(e) => this.setGroupForm({ endDate: e.target.value })} style={smallDateInput} />
                 <button onClick={() => this.addGroup()} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "11px 18px", fontSize: 15, fontWeight: 600, cursor: "pointer", flex: "none" }}>Tambah</button>
               </div>
               {s.groupError && (
-                <div style={{ marginTop: 11, padding: "9px 12px", borderRadius: 10, background: "rgba(255,59,48,.10)", color: "#FF3B30", fontSize: 13, lineHeight: 1.45 }}>
+                <div key={s.groupError} className="jkk-in" style={{ marginTop: 11, padding: "9px 12px", borderRadius: 10, background: "rgba(255,59,48,.10)", color: "#FF3B30", fontSize: 13, lineHeight: 1.45 }}>
                   {s.groupError}
                 </div>
               )}
@@ -2405,17 +2727,18 @@ export default class JurnalApp extends React.Component<{}, State> {
                   Belum ada rencana kinerja. Tambahkan di bawah.
                 </div>
               )}
-              {s.categories.map((c) => {
+              {s.categories.map((c, i) => {
                 const count = s.activities.filter((a) => a.categoryId === c.id).length;
                 const noGroup = !c.groupId || !groupById(s.groups, c.groupId);
                 return (
-                  <div key={c.id} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 11, padding: "12px 14px", border: "1px solid var(--sep)", borderRadius: 14, background: "var(--surface-2)", borderLeft: `3px solid ${noGroup ? "#FF9F0A" : c.color}` }}>
-                    <button onClick={() => this.cycleColor(c.id)} title="Ganti warna" style={{ width: 24, height: 24, borderRadius: 7, border: "none", cursor: "pointer", flex: "none", background: c.color }} />
+                  <div key={c.id} className="jkk-rise" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 11, padding: "12px 14px", border: "1px solid var(--sep)", borderRadius: 14, background: "var(--surface-2)", borderLeft: `3px solid ${noGroup ? "#FF9F0A" : c.color}`, transition: "border-color .3s ease", ...stagger(i + orderedGroups.length, 30) }}>
+                    <button onClick={() => this.cycleColor(c.id)} title="Ganti warna" style={{ width: 24, height: 24, borderRadius: 7, border: "none", cursor: "pointer", flex: "none", background: c.color, transition: "background-color .3s ease, transform .3s var(--ease-spring)" }} />
                     <input value={c.name} onChange={(e) => this.renameCat(c.id, e.target.value)} style={{ flex: "1 1 160px", minWidth: 0, border: "none", background: "transparent", color: "var(--text)", fontSize: 14.5, fontWeight: 560, outline: "none" }} />
                     <select
                       value={c.groupId && groupById(s.groups, c.groupId) ? c.groupId : ""}
                       onChange={(e) => this.setCatGroup(c.id, e.target.value)}
                       title={noGroup ? "Belum ada periode — pilih agar bisa dipilih saat mencatat kegiatan" : "Periode"}
+                      className="jkk-field"
                       style={{ ...selectInput, flex: "0 1 200px", borderColor: noGroup ? "#FF9F0A" : "var(--sep-2)" }}
                     >
                       {this.groupOptions()}
@@ -2433,13 +2756,13 @@ export default class JurnalApp extends React.Component<{}, State> {
                 {PALETTE.map((col) => {
                   const sel = cf.color === col;
                   return (
-                    <button key={col} onClick={() => this.setState({ catForm: { ...this.state.catForm, color: col } })} style={{ width: 28, height: 28, borderRadius: 8, cursor: "pointer", background: col, border: `2px solid ${sel ? "var(--text)" : "transparent"}`, boxShadow: sel ? "inset 0 0 0 2px var(--surface)" : "none" }} />
+                    <button key={col} onClick={() => this.setState({ catForm: { ...this.state.catForm, color: col } })} style={{ width: 28, height: 28, borderRadius: 8, cursor: "pointer", background: col, border: `2px solid ${sel ? "var(--text)" : "transparent"}`, boxShadow: sel ? "inset 0 0 0 2px var(--surface)" : "none", transform: sel ? "scale(1.1)" : "none", transition: "transform .35s var(--ease-spring), border-color .2s ease, box-shadow .2s ease" }} />
                   );
                 })}
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-                <input value={cf.name} onChange={(e) => this.setState({ catForm: { ...this.state.catForm, name: e.target.value } })} placeholder="Nama rencana kinerja" style={{ ...textInput, flex: "1 1 200px" }} />
-                <select value={cf.groupId} onChange={(e) => this.setState({ catForm: { ...this.state.catForm, groupId: e.target.value } })} style={{ ...selectInput, flex: "0 1 200px" }}>
+                <input className="jkk-field" value={cf.name} onChange={(e) => this.setState({ catForm: { ...this.state.catForm, name: e.target.value } })} placeholder="Nama rencana kinerja" style={{ ...textInput, flex: "1 1 200px" }} />
+                <select className="jkk-field" value={cf.groupId} onChange={(e) => this.setState({ catForm: { ...this.state.catForm, groupId: e.target.value } })} style={{ ...selectInput, flex: "0 1 200px" }}>
                   {this.groupOptions()}
                 </select>
                 <button onClick={() => this.addCat()} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "11px 18px", fontSize: 15, fontWeight: 600, cursor: "pointer", flex: "none" }}>Tambah</button>
@@ -2460,8 +2783,12 @@ export default class JurnalApp extends React.Component<{}, State> {
     const n = actsInRange({ activities: s.activities, categories: s.categories, groups: s.groups }, cfg).length;
     const url = this.shareUrl();
     return (
-      <div onClick={() => this.closeShare()} style={overlay(isMobile)}>
-        <div onClick={(e) => e.stopPropagation()} style={modalCard(isMobile)}>
+      <ModalFrame
+        isMobile={isMobile}
+        onRequestClose={() => this.closeShare()}
+        overlayStyle={overlay(isMobile)}
+        cardStyle={modalCard(isMobile)}
+      >
           <header style={modalHeader}>
             <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-.02em", flex: 1 }}>Bagikan Laporan</h2>
             <button onClick={() => this.closeShare()} style={closeBtn}>✕</button>
@@ -2473,22 +2800,22 @@ export default class JurnalApp extends React.Component<{}, State> {
               Tautan publik read-only · <b style={{ color: "var(--text)" }}>{n} kegiatan</b> disertakan
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              <input value={url || (s.shareTokenBusy ? "Menyiapkan tautan…" : "")} readOnly style={{ flex: 1, minWidth: 0, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--sep-2)", background: "var(--bg)", color: "var(--text-2)", fontSize: 12, outline: "none", fontFamily: "ui-monospace,monospace" }} />
+              <input key={url ? "ready" : "busy"} className={url ? "jkk-field jkk-fade" : "jkk-field"} value={url || (s.shareTokenBusy ? "Menyiapkan tautan…" : "")} readOnly style={{ flex: 1, minWidth: 0, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--sep-2)", background: "var(--bg)", color: "var(--text-2)", fontSize: 12, outline: "none", fontFamily: "ui-monospace,monospace" }} />
               <button onClick={() => this.shCopy()} disabled={!url} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 10, padding: "0 18px", fontSize: 14, fontWeight: 600, cursor: url ? "pointer" : "default", opacity: url ? 1 : 0.6, whiteSpace: "nowrap" }}>Salin Tautan</button>
             </div>
           </div>
-          <div style={{ padding: 20, overflow: "auto", flex: 1 }}>
+          <div style={{ padding: 20, overflow: "auto", flex: 1, overscrollBehavior: "contain" }}>
             <p style={{ margin: "0 0 18px", fontSize: 13.5, color: "var(--text-2)", lineHeight: 1.5 }}>Sesuaikan judul, rentang tanggal, dan bagian yang ditampilkan — tautan di atas otomatis diperbarui.</p>
             <div style={{ marginBottom: 16 }}>
               <label style={{ ...fieldLabel, display: "block", margin: "0 0 7px" }}>Judul Laporan</label>
-              <input value={cfg.title} onChange={(e) => this.setCfg({ title: e.target.value })} style={textInput} />
+              <input className="jkk-field" value={cfg.title} onChange={(e) => this.setCfg({ title: e.target.value })} style={textInput} />
             </div>
             <div style={{ marginBottom: 12 }}>
               <label style={{ ...fieldLabel, display: "block", margin: "0 0 7px" }}>Rentang Tanggal</label>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <input type="date" value={cfg.from} onChange={(e) => this.setCfg({ from: e.target.value })} style={dateInput} />
+                <input type="date" className="jkk-field" value={cfg.from} onChange={(e) => this.setCfg({ from: e.target.value })} style={dateInput} />
                 <span style={{ color: "var(--text-3)" }}>→</span>
-                <input type="date" value={cfg.to} onChange={(e) => this.setCfg({ to: e.target.value })} style={dateInput} />
+                <input type="date" className="jkk-field" value={cfg.to} onChange={(e) => this.setCfg({ to: e.target.value })} style={dateInput} />
               </div>
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 20 }}>
@@ -2513,17 +2840,30 @@ export default class JurnalApp extends React.Component<{}, State> {
                 </button>
               ))}
             </div>
-            <p style={{ margin: "14px 0 0", fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.5 }}>Catatan: tautan membuka laporan read-only dari data yang tersimpan di Spreadsheet, sehingga dapat dibuka lintas perangkat tanpa perlu login.</p>
+            <p style={{ margin: "14px 0 0", fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.5 }}>Catatan: siapa pun yang memegang tautan ini bisa membukanya tanpa login, tetapi hanya untuk rentang tanggal di atas — tautan dikunci tanda tangan digital sehingga rentangnya tidak bisa diubah. Mengganti rentang menghasilkan tautan baru. Isinya selalu mengikuti data terbaru di Spreadsheet.</p>
           </div>
           <footer style={modalFooter}>
             <div style={{ flex: 1 }} />
             <button onClick={() => this.closeShare()} style={secondaryBtn}>Batal</button>
             <button onClick={() => this.openReport()} style={primaryBtn}>Buka Laporan</button>
           </footer>
-        </div>
-      </div>
+      </ModalFrame>
     );
   }
+}
+
+/** Normalise an /api/data (or import / 409) payload into JournalData. */
+function toJournal(raw: { activities?: unknown; categories?: unknown; groups?: unknown } | null): JournalData {
+  return {
+    activities: Array.isArray(raw?.activities) ? (raw!.activities as Activity[]) : [],
+    categories: Array.isArray(raw?.categories) ? (raw!.categories as Category[]) : [],
+    groups: Array.isArray(raw?.groups) ? (raw!.groups as Group[]) : [],
+  };
+}
+
+/** Direction from one ISO date to another, for the slide-in animations. */
+function dirBetween(fromISO: string, toISO: string): NavDir {
+  return toISO > fromISO ? "next" : toISO < fromISO ? "prev" : "none";
 }
 
 // ===================================================================
@@ -2877,6 +3217,8 @@ const quickBtn: CSSProperties = {
   cursor: "pointer",
 };
 
+// The dim backdrop and the enter/exit motion come from the .jkk-scrim /
+// .jkk-sheet / .jkk-dialog classes applied by <ModalFrame>.
 function overlay(isMobile: boolean): CSSProperties {
   return {
     position: "fixed",
@@ -2884,9 +3226,6 @@ function overlay(isMobile: boolean): CSSProperties {
     zIndex: 60,
     display: "flex",
     justifyContent: "center",
-    background: "var(--scrim)",
-    backdropFilter: "blur(2px)",
-    animation: "jkk-fade .2s ease",
     alignItems: isMobile ? "flex-end" : "center",
     padding: isMobile ? 0 : 24,
   };
@@ -2904,14 +3243,13 @@ function modalCard(isMobile: boolean): CSSProperties {
           maxWidth: 640,
           borderRadius: "22px 22px 0 0",
           maxHeight: "94dvh",
-          animation: "jkk-sheet .3s cubic-bezier(.32,.72,0,1)",
+          paddingBottom: "env(safe-area-inset-bottom, 0px)",
         }
       : {
           width: 600,
           maxWidth: "calc(100vw - 32px)",
           borderRadius: 20,
           maxHeight: "88dvh",
-          animation: "jkk-pop .22s ease",
         }),
   };
 }

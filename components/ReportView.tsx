@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { ReportModel } from "@/lib/report";
 import { parseStyle } from "@/lib/style";
 import Lightbox, { LightboxState } from "./Lightbox";
+import { Presence } from "./Motion";
 
 export default function ReportView({
   report,
@@ -12,7 +13,8 @@ export default function ReportView({
   backLabel = "‹ Kembali",
 }: {
   report: ReportModel;
-  onToggleTheme: () => void;
+  /** Receives the click so the theme reveal can grow from the button. */
+  onToggleTheme: (e?: { clientX: number; clientY: number }) => void;
   /** Omit on the public /share page — an external viewer has nowhere private to go back to. */
   onBack?: () => void;
   backLabel?: string;
@@ -59,7 +61,7 @@ export default function ReportView({
         >
           Pratinjau Laporan
         </div>
-        <button onClick={onToggleTheme} title="Ganti tema" style={iconBtn}>
+        <button onClick={(e) => onToggleTheme(e)} title="Ganti tema" style={iconBtn}>
           ◐
         </button>
         <button
@@ -523,7 +525,9 @@ export default function ReportView({
         </footer>
       </div>
 
-      {lightbox && <Lightbox state={lightbox} onClose={() => setLightbox(null)} />}
+      <Presence show={!!lightbox}>
+        {lightbox && <Lightbox state={lightbox} onClose={() => setLightbox(null)} />}
+      </Presence>
     </div>
   );
 }

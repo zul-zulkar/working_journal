@@ -119,13 +119,14 @@ export default function CategorySelect({
         </button>
       ) : null}
       {!open && outOfRange && (
-        <div style={{ marginTop: 6, fontSize: 12, color: outOfRangeNote ? "var(--text-3)" : "#FF9F0A", lineHeight: 1.4 }}>
+        <div className="jkk-in" style={{ marginTop: 6, fontSize: 12, color: outOfRangeNote ? "var(--text-3)" : "#FF9F0A", lineHeight: 1.4 }}>
           {outOfRangeNote ||
             "⚠︎ Rencana kinerja ini di luar periode tanggal kegiatan. Ubah tanggal atau pilih rencana kinerja lain."}
         </div>
       )}
       {open && (
         <div
+          className="jkk-drop"
           style={{
             border: "1.5px solid var(--accent)",
             borderRadius: 11,

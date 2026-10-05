@@ -10,6 +10,9 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  // Pins the scale so focusing a field never zooms the page (iOS still allows a
+  // deliberate pinch). Fields are also 16px on phones — see globals.css.
+  maximumScale: 1,
   viewportFit: "cover",
 };
 

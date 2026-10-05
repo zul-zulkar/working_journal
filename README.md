@@ -18,17 +18,29 @@ Diimplementasikan dari prototipe Claude Design (`prototype/`) sesuai brief di
   tidak pernah dikirim ke client.
 - Client hanya memanggil API route internal (`/api/*`) — tidak pernah memanggil
   Google API langsung.
-- `/share/[token]` dapat diakses publik tanpa login (laporan read-only, membaca
-  data live dari Sheets; gambar dilayani langsung dari CDN Blob).
+- Seluruh aplikasi & API dikunci satu kata sandi pemilik (`APP_PASSWORD`,
+  `middleware.ts` + cookie sesi httpOnly bertanda tangan HMAC, 30 hari bergeser).
+- Yang tetap publik tanpa login: `/share/[token]` (laporan read-only, membaca
+  data live dari Sheets — token ditandatangani per rentang tanggal sehingga
+  rentangnya tidak bisa diubah penerima), `/demo` (contoh tampilan publik dengan
+  data fiktif), `/login`, dan `/api/image/*` (gambar Drive legacy untuk laporan).
+- Sinkron lintas perangkat: setiap tab memeriksa perubahan tiap 15 detik (dan
+  saat tab kembali aktif). Simpan memakai revisi (`baseRev`); jika perangkat lain
+  sudah menyimpan duluan, server menolak (409) dan client menggabungkan
+  perubahannya per-ID (`lib/merge.ts`) lalu menyimpan ulang. Penulisan ke Sheets
+  atomik (satu `batchUpdate`), jadi pembaca tak pernah melihat sheet setengah jadi.
 
 ### Peta kode
 
 ```
 app/
   page.tsx                  Aplikasi utama (client) → memanggil /api/*
+  login/page.tsx            Halaman masuk (kata sandi pemilik)
+  demo/page.tsx             Contoh tampilan publik (data fiktif lib/seed.ts)
   share/[token]/page.tsx    Laporan publik read-only (server component)
   api/
-    data/route.ts           GET (baca semua) · PUT (simpan seluruh dokumen)
+    auth/login · logout     POST → set / hapus cookie sesi
+    data/route.ts           GET (baca semua + rev; ?since=rev) · PUT (simpan, cek baseRev → 409)
     upload/route.ts         POST multipart → simpan gambar (Blob / Drive fallback)
     image/[id]/route.ts     GET → proxy stream gambar Drive legacy (publik)
     export/route.ts         GET → unduh seluruh data sebagai Excel (.xlsx)
@@ -36,7 +48,9 @@ app/
     import/route.ts         POST → impor .xlsx, gabung ke data, simpan ke Sheets
     share/route.ts          POST → buat token Bagikan bertanda tangan (server-only secret)
 components/
-  JurnalApp.tsx             UI utama: list / grid / kalender, editor, kelola kategori, share
+  JurnalApp.tsx             UI utama: list / grid / kalender, editor, kelola kategori, share, sinkron
+  Motion.tsx                Animasi: Presence (animasi keluar), sheet tarik-tutup, segmented, tema
+  LoginForm.tsx             Form masuk
   ReportView.tsx            Render laporan (dipakai preview in-app & /share)
   ShareReport.tsx           Pembungkus tema untuk halaman /share publik
   Lightbox.tsx              Penampil gambar
@@ -48,6 +62,8 @@ lib/
   excel.ts                  Ekspor/impor Excel (.xlsx) + template (server-only)
   report.ts                 buildReport() (isomorphic)
   shareToken.ts             codec token share (HMAC, server-only)
+  session.ts                Sesi pemilik (HMAC, Web Crypto — dipakai middleware & API)
+  merge.ts                  Penggabungan 3 arah saat dua perangkat menyimpan bersamaan
   enrich.ts / format.ts     View-model & util tanggal (aman di server + client)
 ```
 
@@ -61,7 +77,8 @@ Satu spreadsheet, dua tab (dibuat otomatis pada run pertama):
     (CDN Vercel Blob); gambar lama menyimpan `fileId` Drive dan tetap dirender
     lewat `/api/image/[fileId]`. Link menyimpan `url`.
 
-Pada run pertama dengan sheet kosong, aplikasi mengisi contoh data (lihat `lib/seed.ts`).
+Pada run pertama (tab belum ada), aplikasi membuat tab dan mengisi contoh data
+(lihat `lib/seed.ts`). Sheet yang sudah ada tidak pernah diisi ulang contoh data.
 
 ## Setup
 
@@ -88,6 +105,7 @@ Pada run pertama dengan sheet kosong, aplikasi mengisi contoh data (lihat `lib/s
 ```bash
 cp .env.local.example .env.local
 # isi GOOGLE_SHEET_ID, kredensial service account, dan BLOB_READ_WRITE_TOKEN
+# isi APP_PASSWORD (kata sandi pemilik untuk membuka aplikasi)
 # lalu isi SHARE_TOKEN_SECRET (wajib untuk fitur Bagikan):
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
@@ -114,7 +132,9 @@ npm run lint       # ESLint
 2. Hubungkan **Blob store** ke project (Storage → Blob) —
    `BLOB_READ_WRITE_TOKEN` terpasang otomatis.
 3. Set env var: `GOOGLE_SHEET_ID` dan `GOOGLE_SERVICE_ACCOUNT_JSON` (gunakan
-   bentuk **base64** agar aman dari masalah newline: `base64 -w0 service-account.json`).
+   bentuk **base64** agar aman dari masalah newline: `base64 -w0 service-account.json`),
+   `SHARE_TOKEN_SECRET`, dan **`APP_PASSWORD`** — tanpa `APP_PASSWORD` aplikasi
+   tetap terkunci (gagal-tertutup) dan halaman masuk menampilkan peringatan.
 4. Deploy. Plan **Hobby** (gratis) cukup: aplikasi single-user, API route
    berjalan sebagai serverless function, gambar dilayani dari CDN Blob.
 
