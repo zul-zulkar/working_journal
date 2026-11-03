@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pengaturan Jurnal → KipApp</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 40px 16px; background: #f5f5f7; color: #1d1d1f;
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Arial, sans-serif; }
+      main { max-width: 560px; margin: 0 auto; }
+      h1 { font-size: 22px; letter-spacing: -.01em; margin: 0 0 4px; }
+      .sub { color: #6e6e73; margin: 0 0 24px; }
+      .card { background: #fff; border-radius: 12px; padding: 18px; border: 1px solid rgba(0,0,0,.06); margin-bottom: 14px; }
+      label { display: block; font-weight: 600; margin-bottom: 6px; }
+      .hint { color: #6e6e73; font-size: 13px; margin: 6px 0 0; }
+      input { width: 100%; padding: 9px 11px; border: 1px solid rgba(0,0,0,.14); border-radius: 8px; font: inherit; outline: none; }
+      input:focus { border-color: #0a84ff; box-shadow: 0 0 0 3px rgba(10,132,255,.15); }
+      .actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+      button { padding: 8px 14px; border-radius: 8px; border: 1px solid rgba(0,0,0,.14); background: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+      button.primary { background: #0a84ff; border-color: #0a84ff; color: #fff; }
+      button:disabled { opacity: .5; cursor: default; }
+      #status { margin: 12px 0 0; padding: 9px 11px; border-radius: 8px; display: none; }
+      #status.ok { display: block; background: #e3f6e8; color: #1b7a34; }
+      #status.bad { display: block; background: #fff0f0; color: #a1000b; }
+      #status.info { display: block; background: #f2f2f7; color: #3a3a3c; }
+      h2 { font-size: 15px; margin: 0 0 8px; }
+      ol { margin: 0; padding-left: 20px; color: #3a3a3c; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Jurnal → KipApp</h1>
+      <p class="sub">Input otomatis kegiatan dari Jurnal Kinerja ke Pelaksanaan Kinerja KipApp.</p>
+
+      <section class="card">
+        <label for="url">URL aplikasi Jurnal Kinerja</label>
+        <input id="url" type="url" placeholder="https://jurnal-kamu.vercel.app" autocomplete="off" />
+        <p class="hint">Alamat tempat Jurnal Kinerja di-deploy. Ekstensi membaca data lewat <code>/api/data</code> memakai login Jurnal yang sudah ada di Chrome — kata sandi tidak disimpan di sini.</p>
+        <div class="actions">
+          <button id="save" class="primary">Simpan &amp; uji koneksi</button>
+          <button id="login" hidden>Masuk ke Jurnal</button>
+        </div>
+        <p id="status"></p>
+      </section>
+
+      <section class="card">
+        <h2>Pemetaan Rencana Kinerja</h2>
+        <p class="hint" style="margin-top:0">Pilihan manual pasangan Rencana Kinerja diingat antar-periode. Hapus bila ingin kembali ke pemasangan otomatis.</p>
+        <div class="actions"><button id="reset">Hapus pemetaan tersimpan</button></div>
+      </section>
+
+      <section class="card">
+        <h2>Cara pakai</h2>
+        <ol>
+          <li>Login KipApp di Chrome, buka <b>Pelaksanaan Kinerja → Pelaksanaan</b>.</li>
+          <li>Klik tombol <b>Jurnal → KipApp</b> di pojok kanan bawah (atau ikon ekstensi).</li>
+          <li>Pilih tahun &amp; periode SKP, cek pemasangan Rencana Kinerja.</li>
+          <li>Tinjau daftar, klik <b>Simulasi</b> bila perlu, lalu <b>Kirim</b>.</li>
+        </ol>
+      </section>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>

@@ -176,6 +176,13 @@ Dari sidebar (kiri bawah, atau menu hamburger di mobile):
 Gambar bukti dukung dikelola langsung di aplikasi (tempel/upload), bukan lewat
 Excel; kolom gambar pada file ekspor hanya untuk round-trip dan diisi otomatis.
 
+## Input otomatis ke KipApp
+
+Folder [`kipapp-extension/`](kipapp-extension/README.md) berisi ekstensi Chrome
+yang mengirim kegiatan Jurnal ke KipApp (Pelaksanaan Kinerja) per periode SKP,
+memakai sesi KipApp yang sudah login di Chrome dan data dari `/api/data`. Cara
+pasang ada di README folder tersebut.
+
 ## Catatan
 
 - Tema (terang/gelap), view aktif, dan urutan disimpan di `localStorage` (preferensi
