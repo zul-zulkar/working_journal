@@ -49,6 +49,7 @@ app/
     template/route.ts       GET → unduh template Excel kosong (+ contoh & petunjuk)
     import/route.ts         POST → impor .xlsx, gabung ke data, simpan ke Sheets
     share/route.ts          POST → buat token Bagikan bertanda tangan (server-only secret)
+    shares/route.ts         GET daftar tautan · POST catat tautan · PATCH cabut / aktifkan lagi
 components/
   JurnalApp.tsx             UI utama: list / grid / kalender, editor, kelola kategori, share, sinkron
                             (prop `shared` = mode hanya-baca untuk /share & /demo)
@@ -71,13 +72,18 @@ lib/
 
 ### Skema data (Google Sheets)
 
-Satu spreadsheet, dua tab (dibuat otomatis pada run pertama):
+Satu spreadsheet, empat tab (tab yang belum ada dibuat otomatis):
 
-- **Categories** — `id | name | color`
+- **Categories** (Rencana Kinerja) — `id | name | color | groupId`
+- **Groups** (Periode) — `id | name | startDate | endDate`
 - **Activities** — `id | categoryId | startDate | endDate | startTime | endTime | title | capaian | evidence`
   - `evidence` disimpan sebagai JSON di satu sel. Gambar baru menyimpan `url`
     (CDN Vercel Blob); gambar lama menyimpan `fileId` Drive dan tetap dirender
     lewat `/api/image/[fileId]`. Link menyimpan `url`.
+- **Shares** (tautan Bagikan) — `id | token | title | from | to | createdAt | revokedAt`
+  - Bukan bagian dokumen jurnal (simpan biasa tidak menyentuh tab ini). Baris
+    tidak dihapus; mencabut tautan mengisi `revokedAt`, dan `/share/[token]`
+    menolak token yang dicabut.
 
 Pada run pertama (tab belum ada), aplikasi membuat tab dan mengisi contoh data
 (lihat `lib/seed.ts`). Sheet yang sudah ada tidak pernah diisi ulang contoh data.
@@ -159,6 +165,21 @@ Catatan: refresh token dari OAuth consent screen berstatus **Testing**
 kedaluwarsa tiap 7 hari — publish ke Production bila ingin dipakai jangka
 panjang. Gambar lama yang masih menyimpan `fileId` Drive tetap tampil lewat
 proxy `/api/image/[fileId]` selama kredensial di atas tersedia.
+
+## Daftar Rencana Kinerja & Tautan
+
+Tombol **Daftar Rencana Kinerja & Tautan** di sidebar membuka halaman dengan dua tab:
+
+- **Rencana Kinerja** — semua RK per periode (periode berjalan ditandai) dengan
+  jumlah kegiatan, jumlah bukti dukung, dan tanggal kegiatan terakhir. Ketuk
+  satu RK untuk kembali ke jurnal yang terfilter ke RK itu; **Kelola** membuka
+  halaman pengeditan.
+- **Tautan Bagikan** — tautan yang pernah disalin atau dibuka dari panel
+  **Bagikan** (tercatat otomatis di tab `Shares`). Tiap tautan bisa disalin,
+  dibuka, atau **dicabut** — penerima lalu melihat "Tautan sudah dicabut".
+  Tautan yang dicabut bisa diaktifkan lagi (menyalin tautan yang sama dari
+  panel Bagikan juga mengaktifkannya lagi). Tautan yang dibuat sebelum fitur ini
+  ada tidak tercatat dan tetap berlaku.
 
 ## Ekspor / impor Excel
 

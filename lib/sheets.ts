@@ -3,14 +3,17 @@ import crypto from "crypto";
 import type { sheets_v4 } from "googleapis";
 import { requireEnv, sheetsClient } from "./google";
 import { seedData } from "./seed";
-import type { Activity, Category, Evidence, Group, JournalData } from "./types";
+import type { Activity, Category, Evidence, Group, JournalData, ShareLink } from "./types";
 
 // ── Google Sheets data access ────────────────────────────────────────────────
-// Three tabs in one spreadsheet:
+// Four tabs in one spreadsheet:
 //   Categories : id | name | color | groupId
 //   Groups     : id | name | startDate | endDate
 //   Activities : id | categoryId | startDate | endDate | startTime | endTime |
 //                title | capaian | evidence(JSON)
+//   Shares     : id | token | title | from | to | createdAt | revokedAt
+//                (share links handed out — see "Share links" at the bottom;
+//                not part of the journal document below)
 // Evidence is serialised as JSON in a single cell (small — image binaries live
 // in Vercel Blob / Drive; evidence only carries the url or legacy fileId).
 //
@@ -23,6 +26,7 @@ import type { Activity, Category, Evidence, Group, JournalData } from "./types";
 const CAT_TAB = "Categories";
 const GRP_TAB = "Groups";
 const ACT_TAB = "Activities";
+const SHARE_TAB = "Shares";
 const CAT_HEADER = ["id", "name", "color", "groupId"];
 const GRP_HEADER = ["id", "name", "startDate", "endDate"];
 const ACT_HEADER = [
@@ -36,6 +40,7 @@ const ACT_HEADER = [
   "capaian",
   "evidence",
 ];
+const SHARE_HEADER = ["id", "token", "title", "from", "to", "createdAt", "revokedAt"];
 
 function spreadsheetId(): string {
   return requireEnv("GOOGLE_SHEET_ID");
@@ -52,7 +57,7 @@ async function ensureStructure(): Promise<boolean> {
       .filter(Boolean) as string[],
   );
 
-  const toCreate = [CAT_TAB, GRP_TAB, ACT_TAB].filter((t) => !existing.has(t));
+  const toCreate = [CAT_TAB, GRP_TAB, ACT_TAB, SHARE_TAB].filter((t) => !existing.has(t));
   if (toCreate.length) {
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: id,
@@ -71,6 +76,7 @@ async function ensureStructure(): Promise<boolean> {
         { range: `${CAT_TAB}!A1:D1`, values: [CAT_HEADER] },
         { range: `${GRP_TAB}!A1:D1`, values: [GRP_HEADER] },
         { range: `${ACT_TAB}!A1:I1`, values: [ACT_HEADER] },
+        { range: `${SHARE_TAB}!A1:G1`, values: [SHARE_HEADER] },
       ],
     },
   });
@@ -286,4 +292,119 @@ export async function saveData(data: JournalData): Promise<void> {
     });
   }
   await sheets.spreadsheets.batchUpdate({ spreadsheetId: id, requestBody: { requests } });
+}
+
+// ── Share links ──────────────────────────────────────────────────────────────
+// Rows are appended when the owner hands a link out and afterwards only their
+// revokedAt cell changes — saveData() never touches this tab, so a journal save
+// from another device can't drop a revocation. Tokens are deterministic (same
+// title + range => same token), so every operation matches by token and covers
+// duplicate rows a race between two devices may have appended.
+
+async function readShareRows(): Promise<string[][]> {
+  await ensureStructureOnce();
+  try {
+    const res = await sheetsClient().spreadsheets.values.get({
+      spreadsheetId: spreadsheetId(),
+      range: `${SHARE_TAB}!A2:G`,
+    });
+    // Blank rows in between come back as [] — row i lives at sheet row i + 2.
+    return ((res.data.values || []) as unknown[][]).map((r) => (r || []).map(cell));
+  } catch (err) {
+    structureReady = null;
+    throw err;
+  }
+}
+
+function toShare(r: string[]): ShareLink {
+  return {
+    id: r[0],
+    token: r[1] ?? "",
+    title: r[2] ?? "",
+    from: r[3] ?? "",
+    to: r[4] ?? "",
+    createdAt: r[5] ?? "",
+    revokedAt: r[6] ?? "",
+  };
+}
+
+function rowsWithToken(rows: string[][], token: string): number[] {
+  const out: number[] = [];
+  rows.forEach((r, i) => {
+    if (r[0] && r[1] === token) out.push(i);
+  });
+  return out;
+}
+
+async function writeRevokedAt(rowIdx: number[], value: string): Promise<void> {
+  if (!rowIdx.length) return;
+  await sheetsClient().spreadsheets.values.batchUpdate({
+    spreadsheetId: spreadsheetId(),
+    requestBody: {
+      valueInputOption: "RAW",
+      data: rowIdx.map((i) => ({ range: `${SHARE_TAB}!G${i + 2}`, values: [[value]] })),
+    },
+  });
+}
+
+/** Recorded share links, one per token, newest first. */
+export async function getShares(): Promise<ShareLink[]> {
+  const rows = await readShareRows();
+  const byToken = new Map<string, ShareLink>();
+  for (const r of rows) {
+    if (!r[0] || !r[1]) continue;
+    const prev = byToken.get(r[1]);
+    if (!prev) byToken.set(r[1], toShare(r));
+    else if (!prev.revokedAt && r[6]) prev.revokedAt = r[6];
+  }
+  return Array.from(byToken.values()).sort((a, b) =>
+    a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0,
+  );
+}
+
+/**
+ * Records a link the owner just handed out. Already recorded => returned as is,
+ * re-activated if it had been revoked (sharing it again means it should work).
+ */
+export async function registerShare(
+  input: Pick<ShareLink, "token" | "title" | "from" | "to">,
+): Promise<ShareLink> {
+  const rows = await readShareRows();
+  const hits = rowsWithToken(rows, input.token);
+  if (hits.length) {
+    if (hits.some((i) => rows[i][6])) await writeRevokedAt(hits, "");
+    return { ...toShare(rows[hits[0]]), revokedAt: "" };
+  }
+  const link: ShareLink = {
+    id: crypto.randomBytes(9).toString("base64url"),
+    ...input,
+    createdAt: new Date().toISOString(),
+    revokedAt: "",
+  };
+  await sheetsClient().spreadsheets.values.append({
+    spreadsheetId: spreadsheetId(),
+    range: `${SHARE_TAB}!A:G`,
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: {
+      values: [[link.id, link.token, link.title, link.from, link.to, link.createdAt, ""]],
+    },
+  });
+  return link;
+}
+
+/** Revokes (or re-activates) a recorded link. null if the id is unknown. */
+export async function setShareRevoked(id: string, revoked: boolean): Promise<ShareLink | null> {
+  const rows = await readShareRows();
+  const row = rows.find((r) => r[0] === id);
+  if (!row || !row[1]) return null;
+  const revokedAt = revoked ? new Date().toISOString() : "";
+  await writeRevokedAt(rowsWithToken(rows, row[1]), revokedAt);
+  return { ...toShare(row), revokedAt };
+}
+
+/** Whether /share/[token] must refuse this token. Unrecorded tokens stay valid. */
+export async function isShareRevoked(token: string): Promise<boolean> {
+  const rows = await readShareRows();
+  return rows.some((r) => r[0] && r[1] === token && !!r[6]);
 }

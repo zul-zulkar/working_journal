@@ -1,7 +1,7 @@
 "use client";
 
 import React, { CSSProperties } from "react";
-import type { Activity, Category, Evidence, Group, JournalData } from "@/lib/types";
+import type { Activity, Category, Evidence, Group, JournalData, ShareLink } from "@/lib/types";
 import { ActivityItem, buildGroups, enrichActivity } from "@/lib/enrich";
 import {
   PALETTE,
@@ -9,6 +9,7 @@ import {
   categoriesInRange,
   fmt,
   fmtLong,
+  fmtMed,
   groupById,
   imageUrl,
   parseD,
@@ -53,6 +54,12 @@ type View = "list" | "grid" | "calendar" | "table" | "hourly";
 type NavDir = "next" | "prev" | "none";
 type Sort = "date-desc" | "date-asc" | "title";
 type TableCol = "date" | "time" | "cat" | "title" | "capaian";
+/** Tabs of the "Daftar" page. */
+type ListTab = "rk" | "share";
+const LIST_TAB_LABEL: Record<ListTab, string> = {
+  rk: "Rencana Kinerja",
+  share: "Tautan Bagikan",
+};
 const SYNC_LABEL: Record<State["sync"], string> = {
   ok: "Tersimpan · otomatis diperbarui dari perangkat lain",
   saving: "Menyimpan…",
@@ -111,6 +118,13 @@ type State = {
   catForm: { name: string; color: string; groupId: string };
   groupForm: { name: string; startDate: string; endDate: string };
   groupError: string | null;
+  /** "Daftar" page: Rencana Kinerja summary + share links handed out. */
+  listOpen: boolean;
+  listTab: ListTab;
+  /** Recorded share links (GET /api/shares); null until first loaded. */
+  shares: ShareLink[] | null;
+  sharesBusy: boolean;
+  sharesError: string | null;
   lightbox: LightboxState | null;
   dayView: string | null;
   shareOpen: boolean;
@@ -154,6 +168,8 @@ export default class JurnalApp extends React.Component<Props, State> {
   private shareTokenTimer: ReturnType<typeof setTimeout> | null = null;
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
   private shareTokenSeq = 0;
+  /** Tokens with a POST /api/shares in flight (a double click records once). */
+  private recordingShares = new Set<string>();
   private onResize = () => {
     if (this.mounted) this.setState({ width: window.innerWidth });
   };
@@ -211,6 +227,7 @@ export default class JurnalApp extends React.Component<Props, State> {
     return !!(
       st.editorOpen ||
       st.manageOpen ||
+      st.listOpen ||
       st.dayView ||
       st.shareOpen ||
       st.detailId ||
@@ -239,6 +256,8 @@ export default class JurnalApp extends React.Component<Props, State> {
       ? { dayView: null }
       : st.manageOpen
       ? { manageOpen: false }
+      : st.listOpen
+      ? { listOpen: false }
       : { sidebarOpen: false };
     this.poppingBack = true;
     this.setState(patch as State, () => {
@@ -293,6 +312,11 @@ export default class JurnalApp extends React.Component<Props, State> {
       catForm: { name: "", color: PALETTE[0], groupId: "" },
       groupForm: { name: "", startDate: todayISO(), endDate: todayISO() },
       groupError: null,
+      listOpen: false,
+      listTab: "rk",
+      shares: null,
+      sharesBusy: false,
+      sharesError: null,
       lightbox: null,
       dayView: null,
       shareOpen: false,
@@ -1469,6 +1493,105 @@ export default class JurnalApp extends React.Component<Props, State> {
     this.commitData({ groups, categories }, () => this.flash("Periode dihapus"));
   }
 
+  // ---------- "Daftar" page (Rencana Kinerja + share links) ----------
+  openLists(tab: ListTab = this.state.listTab) {
+    this.setState({ listOpen: true, listTab: tab, sidebarOpen: false, shareOpen: false });
+    if (typeof window !== "undefined") window.scrollTo(0, 0);
+    // Always re-read: links may have been handed out from another device.
+    this.loadShares();
+  }
+  closeLists() {
+    this.setState({ listOpen: false });
+  }
+  /** From the Rencana Kinerja list: back to the journal, filtered to that RK. */
+  showCategory(id: string) {
+    this.setState({ filterCat: id, listOpen: false });
+    if (typeof window !== "undefined") window.scrollTo(0, 0);
+  }
+  loadShares() {
+    this.setState({ sharesBusy: true, sharesError: null });
+    this.api("/api/shares", { cache: "no-store" })
+      .then(async (r) => {
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || "Gagal memuat daftar tautan.");
+        return j as { shares: ShareLink[] };
+      })
+      .then((j) => {
+        if (this.mounted) this.setState({ shares: j.shares, sharesBusy: false });
+      })
+      .catch((err) => {
+        if (!this.mounted) return;
+        const msg =
+          err instanceof TypeError
+            ? "Tidak dapat menghubungi server. Periksa koneksi internet."
+            : err.message || "Gagal memuat daftar tautan.";
+        this.setState({ sharesBusy: false, sharesError: msg });
+      });
+  }
+  /** Insert or replace a link in the loaded list, keeping newest first. */
+  upsertShare(link: ShareLink) {
+    this.setState((s) =>
+      s.shares
+        ? {
+            shares: [link, ...s.shares.filter((x) => x.token !== link.token)].sort((a, b) =>
+              a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0,
+            ),
+          }
+        : null,
+    );
+  }
+  /**
+   * Adds a link to Daftar Tautan as it is copied / opened from the Bagikan
+   * panel (the server dedupes by token, and re-activates a revoked one). The
+   * link works either way, so a failure only costs its place in the list.
+   */
+  recordShare(token: string) {
+    if (this.recordingShares.has(token)) return;
+    this.recordingShares.add(token);
+    this.api("/api/shares", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    })
+      .then(async (r) => {
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || "Gagal mencatat tautan.");
+        return j as { share: ShareLink };
+      })
+      .then((j) => {
+        if (this.mounted) this.upsertShare(j.share);
+      })
+      .catch(() => {
+        if (this.mounted) this.flash("Tautan belum tercatat di Daftar Tautan");
+      })
+      .finally(() => this.recordingShares.delete(token));
+  }
+  revokeShare(link: ShareLink, revoked: boolean) {
+    if (
+      revoked &&
+      !window.confirm(
+        `Cabut tautan "${link.title}"? Siapa pun yang memegang tautan ini tidak bisa membukanya lagi.`,
+      )
+    )
+      return;
+    this.api("/api/shares", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: link.id, revoked }),
+    })
+      .then(async (r) => {
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || "Gagal memperbarui tautan.");
+        return j as { share: ShareLink };
+      })
+      .then((j) => {
+        if (!this.mounted) return;
+        this.upsertShare(j.share);
+        this.flash(revoked ? "Tautan dicabut" : "Tautan diaktifkan lagi");
+      })
+      .catch((err) => this.flash(err.message || "Gagal memperbarui tautan"));
+  }
+
   // ---------- lightbox ----------
   openLightbox(images: string[], index: number, title: string) {
     if (!images || !images.length) return;
@@ -1667,9 +1790,13 @@ export default class JurnalApp extends React.Component<Props, State> {
   }
   /** Public URL for the current signed token, or "" while it's still being minted. */
   shareUrl(): string {
-    if (!this.state.shareToken) return "";
-    const origin = typeof window !== "undefined" ? window.location.origin : "";
-    return `${origin}/share/${this.state.shareToken}`;
+    return this.state.shareToken ? shareLinkUrl(this.state.shareToken) : "";
+  }
+  copyUrl(url: string) {
+    const done = () => this.flash("Tautan disalin");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(done, () => this.flash("Salin manual dari kotak tautan"));
+    } else this.flash("Salin manual dari kotak tautan");
   }
   shCopy() {
     const url = this.shareUrl();
@@ -1677,10 +1804,8 @@ export default class JurnalApp extends React.Component<Props, State> {
       this.flash("Tautan belum siap, tunggu sebentar…");
       return;
     }
-    const done = () => this.flash("Tautan disalin");
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(url).then(done, () => this.flash("Salin manual dari kotak tautan"));
-    } else this.flash("Salin manual dari kotak tautan");
+    this.copyUrl(url);
+    this.recordShare(this.state.shareToken as string);
   }
   /** Open the public link in a new tab — exactly what a recipient will see. */
   shOpen() {
@@ -1690,6 +1815,7 @@ export default class JurnalApp extends React.Component<Props, State> {
       return;
     }
     window.open(url, "_blank", "noopener");
+    this.recordShare(this.state.shareToken as string);
   }
   /** Printable report (Cetak / PDF) for the panel's title and range. */
   openReport() {
@@ -1826,6 +1952,8 @@ export default class JurnalApp extends React.Component<Props, State> {
       <div data-theme={s.theme} style={rootStyle}>
         {this.renderApp()}
         <Presence show={!!s.dayView}>{s.dayView && this.renderDay()}</Presence>
+        {/* Before the manage page: "Kelola" opened from the list sits on top. */}
+        <Presence show={s.listOpen}>{s.listOpen && this.renderLists()}</Presence>
         <Presence show={s.manageOpen}>{s.manageOpen && this.renderManage()}</Presence>
         <Presence show={s.editorOpen && !!s.form}>{s.editorOpen && this.renderEditor()}</Presence>
         <Presence show={s.shareOpen && !!s.shareCfg}>{s.shareOpen && this.renderShare()}</Presence>
@@ -1994,6 +2122,7 @@ export default class JurnalApp extends React.Component<Props, State> {
               <div style={{ padding: 10, borderTop: "1px solid var(--sep)", display: "flex", flexDirection: "column", gap: 1 }}>
                 {!shared && (
                   <>
+                    <button onClick={() => this.openLists()} style={sideFootBtn}>Daftar Rencana Kinerja & Tautan</button>
                     <button onClick={() => this.openManage()} style={sideFootBtn}>Kelola Rencana Kinerja & Periode</button>
                     <button onClick={() => this.exportExcel()} style={sideFootBtn}>Export Excel (.xlsx)</button>
                     <label style={{ ...sideFootBtn, display: "block" }}>
@@ -2141,6 +2270,7 @@ export default class JurnalApp extends React.Component<Props, State> {
               </div>
               <div style={{ padding: "8px 10px", overflow: "auto", flex: 1, overscrollBehavior: "contain" }}>{this.renderNav(true)}</div>
               {!shared && <div style={{ padding: 10, borderTop: "1px solid var(--sep)", display: "flex", flexDirection: "column", gap: 1 }}>
+                <button onClick={() => this.openLists()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Daftar Rencana Kinerja & Tautan</button>
                 <button onClick={() => this.openManage()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Kelola Rencana Kinerja & Periode</button>
                 <button onClick={() => this.exportExcel()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Export Excel (.xlsx)</button>
                 <label style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px", display: "block" }}>
@@ -2901,6 +3031,207 @@ export default class JurnalApp extends React.Component<Props, State> {
     );
   }
 
+  // ---------- DAFTAR (Rencana Kinerja + Tautan Bagikan) ----------
+  renderLists() {
+    const s = this.state;
+    const tab = s.listTab;
+    const active = (s.shares || []).filter((x) => !x.revokedAt);
+    const revoked = (s.shares || []).filter((x) => !!x.revokedAt);
+    const sub =
+      tab === "rk"
+        ? `${s.categories.length} rencana kinerja · ${s.groups.length} periode`
+        : s.shares
+        ? `${active.length} aktif · ${revoked.length} dicabut`
+        : "Memuat…";
+    return (
+      <div className="jkk-page" style={{ position: "fixed", inset: 0, zIndex: 55, background: "var(--bg)", overflow: "auto", overscrollBehavior: "contain" }}>
+        <div style={{ position: "sticky", top: 0, zIndex: 5, display: "flex", alignItems: "center", gap: 12, padding: "12px clamp(14px,4vw,26px)", background: "var(--surface)", borderBottom: "1px solid var(--sep)", backdropFilter: "saturate(180%) blur(20px)" }}>
+          <button onClick={() => this.closeLists()} style={backBtn}>‹ Kembali</button>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 16, fontWeight: 720, letterSpacing: "-.02em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Daftar {LIST_TAB_LABEL[tab]}</div>
+            <div style={{ fontSize: 12.5, color: "var(--text-3)" }}>{sub}</div>
+          </div>
+          {tab === "rk" ? (
+            <button onClick={() => this.openManage()} style={{ ...backBtn, color: "var(--accent)", flex: "none" }}>Kelola</button>
+          ) : (
+            <button onClick={() => this.openShare()} style={{ ...backBtn, background: "var(--accent)", color: "#fff", flex: "none" }}>＋ Tautan</button>
+          )}
+        </div>
+
+        <div style={{ maxWidth: 860, margin: "0 auto", padding: "clamp(16px,3vw,28px)" }}>
+          <Segmented<ListTab>
+            options={(["rk", "share"] as ListTab[]).map((v) => ({ value: v, label: LIST_TAB_LABEL[v] }))}
+            value={tab}
+            onChange={(v) => this.setState({ listTab: v })}
+            style={{ display: "inline-flex", background: "var(--fill)", borderRadius: 10, padding: 2, maxWidth: "100%", marginBottom: 20 }}
+            buttonStyle={(on) => ({ ...this.navStyle(on), whiteSpace: "nowrap" })}
+          />
+          <div key={tab} className="jkk-view">
+            {tab === "rk" ? this.renderRkList() : this.renderShareList(active, revoked)}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  renderRkList() {
+    const s = this.state;
+    // One pass over the journal: activity / evidence count and last date per RK.
+    const stats = new Map<string, { n: number; ev: number; last: string }>();
+    for (const a of s.activities) {
+      const st = stats.get(a.categoryId) || { n: 0, ev: 0, last: "" };
+      st.n++;
+      st.ev += (a.evidence || []).length;
+      const end = a.endDate || a.startDate;
+      if (end > st.last) st.last = end;
+      stats.set(a.categoryId, st);
+    }
+    const today = todayISO();
+    const orderedGroups = s.groups
+      .slice()
+      .sort((a, b) => (a.startDate < b.startDate ? -1 : a.startDate > b.startDate ? 1 : 0));
+    const sections = orderedGroups.map((g) => ({
+      key: g.id,
+      group: g as Group | null,
+      cats: s.categories.filter((c) => c.groupId === g.id),
+    }));
+    const ungrouped = s.categories.filter((c) => !c.groupId || !groupById(s.groups, c.groupId));
+    if (ungrouped.length) sections.push({ key: "none", group: null, cats: ungrouped });
+
+    if (!s.categories.length) {
+      return (
+        <div style={{ padding: "18px 16px", border: "1px dashed var(--sep-2)", borderRadius: 12, color: "var(--text-3)", fontSize: 13.5, lineHeight: 1.5 }}>
+          Belum ada rencana kinerja.{" "}
+          <button onClick={() => this.openManage()} style={linkBtn}>Tambahkan di halaman Kelola</button>
+        </div>
+      );
+    }
+    let n = 0;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
+        <p style={{ margin: 0, fontSize: 13.5, color: "var(--text-2)", lineHeight: 1.55 }}>
+          Rencana Kinerja per periode beserta jumlah kegiatannya. Ketuk salah satu untuk melihat kegiatannya di jurnal.
+        </p>
+        {sections.map(({ key, group: g, cats }) => {
+          const current = !!g && g.startDate <= today && today <= g.endDate;
+          const total = cats.reduce((sum, c) => sum + (stats.get(c.id)?.n || 0), 0);
+          return (
+            <section key={key}>
+              <div className="jkk-rise" style={{ display: "flex", alignItems: "baseline", flexWrap: "wrap", gap: "2px 9px", padding: "0 2px 10px", ...stagger(n++) }}>
+                <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, letterSpacing: "-.01em", color: g ? "var(--text)" : "var(--text-3)" }}>{g ? g.name || "Periode tanpa nama" : "Tanpa periode"}</h3>
+                {g && <span style={{ fontSize: 12.5, color: "var(--text-3)" }}>{rangeLabel(g.startDate, g.endDate)}</span>}
+                {current && <span style={{ fontSize: 11, fontWeight: 650, color: "var(--accent)", background: "var(--accent-soft)", padding: "2px 8px", borderRadius: 16 }}>Periode berjalan</span>}
+                <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--text-3)", fontVariantNumeric: "tabular-nums" }}>{cats.length} RK · {total} kegiatan</span>
+              </div>
+              {!g && (
+                <p style={{ margin: "-4px 2px 10px", fontSize: 12, color: "#FF9F0A", lineHeight: 1.45 }}>
+                  Belum ditetapkan ke periode — tidak bisa dipilih saat mencatat kegiatan.
+                </p>
+              )}
+              {cats.length === 0 ? (
+                <div style={{ padding: "12px 14px", border: "1px dashed var(--sep-2)", borderRadius: 12, color: "var(--text-3)", fontSize: 13 }}>Belum ada rencana kinerja di periode ini.</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {cats.map((c) => {
+                    const st = stats.get(c.id);
+                    return (
+                      <button
+                        key={c.id}
+                        onClick={() => this.showCategory(c.id)}
+                        className="jkk-rise"
+                        style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left", padding: "12px 14px", border: "1px solid var(--sep)", borderLeft: `3px solid ${c.color}`, borderRadius: 14, background: "var(--surface)", color: "var(--text)", cursor: "pointer", ...stagger(n++) }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 14.5, fontWeight: 600, lineHeight: 1.4, overflowWrap: "break-word" }}>{c.name || "Tanpa nama"}</div>
+                          <div style={{ fontSize: 12.5, color: "var(--text-3)", marginTop: 3 }}>
+                            {st
+                              ? `${st.n} kegiatan · ${st.ev} bukti dukung · terakhir ${fmtMed(st.last)}`
+                              : "Belum ada kegiatan"}
+                          </div>
+                        </div>
+                        <span style={{ fontSize: 15, fontWeight: 650, color: st ? "var(--text)" : "var(--text-3)", fontVariantNumeric: "tabular-nums", flex: "none" }}>{st?.n || 0}</span>
+                        <span aria-hidden style={{ color: "var(--text-3)", fontSize: 18, flex: "none" }}>›</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
+    );
+  }
+
+  renderShareList(active: ShareLink[], revoked: ShareLink[]) {
+    const s = this.state;
+    const journal = { activities: s.activities, categories: s.categories, groups: s.groups };
+    const card = (link: ShareLink, i: number) => {
+      const off = !!link.revokedAt;
+      const url = shareLinkUrl(link.token);
+      const n = actsInRange(journal, link).length;
+      return (
+        <div key={link.id} className="jkk-rise" style={{ padding: "14px 16px", border: "1px solid var(--sep)", borderRadius: 14, background: off ? "var(--surface-2)" : "var(--surface)", ...stagger(i, 40) }}>
+          <div style={{ fontSize: 15, fontWeight: 650, lineHeight: 1.35, overflowWrap: "break-word", color: off ? "var(--text-2)" : "var(--text)" }}>{link.title}</div>
+          <div style={{ fontSize: 12.5, color: "var(--text-3)", marginTop: 3, lineHeight: 1.45 }}>
+            {rangeLabel(link.from, link.to)} · {n} kegiatan · {off ? `dicabut ${stampLabel(link.revokedAt)}` : `dibuat ${stampLabel(link.createdAt)}`}
+          </div>
+          {!off && (
+            <input className="jkk-field" value={url} readOnly onFocus={(e) => e.currentTarget.select()} aria-label="Tautan" style={{ width: "100%", marginTop: 10, padding: "9px 12px", borderRadius: 10, border: "1px solid var(--sep-2)", background: "var(--bg)", color: "var(--text-2)", fontSize: 12, outline: "none", fontFamily: "ui-monospace,monospace" }} />
+          )}
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 10 }}>
+            {off ? (
+              <button onClick={() => this.revokeShare(link, false)} style={quickBtn}>Aktifkan lagi</button>
+            ) : (
+              <>
+                <button onClick={() => this.copyUrl(url)} style={{ ...quickBtn, background: "var(--accent)", borderColor: "var(--accent)", color: "#fff", fontWeight: 600 }}>Salin</button>
+                <button onClick={() => window.open(url, "_blank", "noopener")} style={quickBtn}>Buka ↗</button>
+                <div style={{ flex: 1 }} />
+                <button onClick={() => this.revokeShare(link, true)} style={{ ...quickBtn, color: "#FF3B30" }}>Cabut</button>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <p style={{ margin: 0, fontSize: 13.5, color: "var(--text-2)", lineHeight: 1.55 }}>
+          Tautan Bagikan yang pernah Anda salin atau buka. Cabut tautan agar penerimanya tidak bisa membukanya lagi.
+        </p>
+        {s.sharesError && (
+          <div key={s.sharesError} role="alert" className="jkk-in" style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "9px 12px", borderRadius: 10, background: "rgba(255,59,48,.10)", color: "#FF3B30", fontSize: 13, lineHeight: 1.45 }}>
+            <span style={{ flex: 1, minWidth: 0 }}>{s.sharesError}</span>
+            <button onClick={() => this.loadShares()} style={{ ...linkBtn, color: "#FF3B30" }}>Coba lagi</button>
+          </div>
+        )}
+        {!s.shares && s.sharesBusy && (
+          <div style={{ display: "flex", justifyContent: "center", padding: 30 }}>
+            <div className="jkk-spinner" style={{ width: 26, height: 26, borderRadius: "50%", border: "3px solid var(--fill-2)", borderTopColor: "var(--accent)", animation: "jkk-spin .8s linear infinite" }} />
+          </div>
+        )}
+        {s.shares && active.length === 0 && (
+          <div style={{ padding: "18px 16px", border: "1px dashed var(--sep-2)", borderRadius: 12, color: "var(--text-3)", fontSize: 13.5, lineHeight: 1.55 }}>
+            Belum ada tautan aktif. Buat tautan lewat{" "}
+            <button onClick={() => this.openShare()} style={linkBtn}>Bagikan</button>
+            {" "}— tautan tercatat di sini begitu disalin atau dibuka.
+          </div>
+        )}
+        {active.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{active.map(card)}</div>}
+        {revoked.length > 0 && (
+          <section style={{ marginTop: 10 }}>
+            <h3 style={{ margin: "0 2px 10px", fontSize: 13, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: ".05em" }}>Dicabut · {revoked.length}</h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{revoked.map(card)}</div>
+          </section>
+        )}
+        <p style={{ margin: "6px 0 0", fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.5 }}>
+          Tautan yang dibuat sebelum daftar ini tersedia tidak tercatat di sini dan tetap berlaku.
+        </p>
+      </div>
+    );
+  }
+
   // ---------- DETAIL (read-only, public view) ----------
   renderDetail() {
     const s = this.state;
@@ -2990,7 +3321,7 @@ export default class JurnalApp extends React.Component<Props, State> {
               Tautan publik read-only · <b style={{ color: "var(--text)" }}>{n} kegiatan</b> disertakan
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              <input key={url ? "ready" : "busy"} className={url ? "jkk-field jkk-fade" : "jkk-field"} value={url || (s.shareTokenBusy ? "Menyiapkan tautan…" : s.shareError ? "Tautan gagal dibuat" : "")} readOnly onFocus={(e) => url && e.currentTarget.select()} style={{ flex: 1, minWidth: 0, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--sep-2)", background: "var(--bg)", color: "var(--text-2)", fontSize: 12, outline: "none", fontFamily: "ui-monospace,monospace" }} />
+              <input key={url ? "ready" : "busy"} className={url ? "jkk-field jkk-fade" : "jkk-field"} value={url || (s.shareTokenBusy ? "Menyiapkan tautan…" : s.shareError ? "Tautan gagal dibuat" : "")} readOnly onFocus={(e) => url && e.currentTarget.select()} onCopy={() => s.shareToken && this.recordShare(s.shareToken)} style={{ flex: 1, minWidth: 0, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--sep-2)", background: "var(--bg)", color: "var(--text-2)", fontSize: 12, outline: "none", fontFamily: "ui-monospace,monospace" }} />
               <button onClick={() => this.shCopy()} disabled={!url} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 10, padding: "0 18px", fontSize: 14, fontWeight: 600, cursor: url ? "pointer" : "default", opacity: url ? 1 : 0.6, whiteSpace: "nowrap" }}>Salin Tautan</button>
             </div>
             {s.shareError && (
@@ -3021,6 +3352,11 @@ export default class JurnalApp extends React.Component<Props, State> {
               <button onClick={() => this.shQuick("all")} style={quickBtn}>Semua</button>
             </div>
             <p style={{ margin: "14px 0 0", fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.5 }}>Catatan: siapa pun yang memegang tautan ini bisa membukanya tanpa login, tetapi hanya untuk rentang tanggal di atas — tautan dikunci tanda tangan digital sehingga rentangnya tidak bisa diubah, dan kegiatan di luar rentang tidak pernah dikirim ke penerima. Mengganti rentang menghasilkan tautan baru. Isinya selalu mengikuti data terbaru di Spreadsheet.</p>
+            <p style={{ margin: "10px 0 0", fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.5 }}>
+              Tautan yang disalin atau dibuka tercatat di{" "}
+              <button onClick={() => this.openLists("share")} style={{ ...linkBtn, fontSize: 11.5 }}>Daftar Tautan</button>
+              {" "}— di sana tautan bisa dicabut kapan saja.
+            </p>
           </div>
           <footer style={modalFooter}>
             <button onClick={() => this.openReport()} style={footerLinkBtn("var(--accent)")} title="Laporan ringkas untuk dicetak / disimpan sebagai PDF">Versi Cetak</button>
@@ -3040,6 +3376,18 @@ function toJournal(raw: { activities?: unknown; categories?: unknown; groups?: u
     categories: Array.isArray(raw?.categories) ? (raw!.categories as Category[]) : [],
     groups: Array.isArray(raw?.groups) ? (raw!.groups as Group[]) : [],
   };
+}
+
+/** Public URL of a share token. */
+function shareLinkUrl(token: string): string {
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  return `${origin}/share/${token}`;
+}
+
+/** "3 Nov 2026" for an ISO timestamp, in the viewer's local date. */
+function stampLabel(ts: string): string {
+  const d = new Date(ts);
+  return isNaN(d.getTime()) ? "" : fmtMed(toISO(d));
 }
 
 /** Date the public view opens on: the range's latest activity (clamped into it), else its end. */

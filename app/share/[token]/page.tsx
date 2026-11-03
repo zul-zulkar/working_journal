@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { getDataReadOnly } from "@/lib/sheets";
+import { getDataReadOnly, isShareRevoked } from "@/lib/sheets";
 import { journalInRange } from "@/lib/report";
 import { decodeShareToken } from "@/lib/shareToken";
 import { ConfigError } from "@/lib/google";
@@ -63,8 +63,17 @@ export default async function SharePage({
 
   let data;
   try {
+    const [full, revoked] = await Promise.all([getDataReadOnly(), isShareRevoked(params.token)]);
+    if (revoked) {
+      return (
+        <Notice
+          title="Tautan sudah dicabut"
+          body="Pemilik jurnal telah menonaktifkan tautan laporan ini. Minta tautan baru bila masih diperlukan."
+        />
+      );
+    }
     // Same UI as the owner's app (read-only), fed only the shared range.
-    data = journalInRange(await getDataReadOnly(), cfg.from, cfg.to);
+    data = journalInRange(full, cfg.from, cfg.to);
   } catch (err) {
     if (err instanceof ConfigError) {
       return (

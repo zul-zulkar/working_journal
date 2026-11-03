@@ -69,3 +69,24 @@ export type JournalData = {
   categories: Category[];
   groups: Group[];
 };
+
+/**
+ * A share link the owner handed out (recorded when it is copied / opened from
+ * the Bagikan panel). Kept apart from JournalData: it is not part of the synced
+ * journal document, and a revoked row is what makes /share/[token] refuse the
+ * link — so rows are revoked (revokedAt set), never deleted.
+ */
+export type ShareLink = {
+  id: string;
+  /** Signed token — the public URL is /share/<token>. */
+  token: string;
+  title: string;
+  /** ISO date yyyy-mm-dd */
+  from: string;
+  /** ISO date yyyy-mm-dd */
+  to: string;
+  /** ISO timestamp */
+  createdAt: string;
+  /** ISO timestamp, or "" while the link is active. */
+  revokedAt: string;
+};
