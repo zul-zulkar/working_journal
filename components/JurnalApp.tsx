@@ -216,6 +216,19 @@ export default class JurnalApp extends React.Component<Props, State> {
   private onDocPaste = (e: ClipboardEvent) => {
     if (this.state.editorOpen) this.pasteImages(e);
   };
+  // ← / → step the date-anchored views from the keyboard (desktop), unless
+  // typing in a field or something sits on top (editor, lightbox, menus).
+  private onKeyDown = (e: KeyboardEvent) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    const st = this.state;
+    if (st.editorOpen || st.lightbox || st.detailId || st.shareOpen || st.manageOpen || st.listOpen || st.sidebarOpen) return;
+    if (this.stepDate(e.key === "ArrowRight" ? 1 : -1)) e.preventDefault();
+  };
+  // The day sheet scrolls itself (fixed page), not the window.
+  private dayPageEl: HTMLDivElement | null = null;
   // ---- back-gesture / history trap (mobile Safari) ----
   // We keep one history entry on the stack while any overlay is open, so the
   // iOS edge-swipe back (or Android hardware back) closes the top overlay
@@ -337,6 +350,7 @@ export default class JurnalApp extends React.Component<Props, State> {
     this.mounted = true;
     window.addEventListener("resize", this.onResize);
     window.addEventListener("popstate", this.onPopState);
+    window.addEventListener("keydown", this.onKeyDown);
     if (this.props.shared) {
       // Data came with the page — no load, sync, polling or paste-to-upload.
       // Only the theme is taken from saved prefs; the tab is always SHARED_VIEW.
@@ -386,6 +400,7 @@ export default class JurnalApp extends React.Component<Props, State> {
     window.removeEventListener("resize", this.onResize);
     document.removeEventListener("paste", this.onDocPaste);
     window.removeEventListener("popstate", this.onPopState);
+    window.removeEventListener("keydown", this.onKeyDown);
     document.removeEventListener("visibilitychange", this.onVisible);
     window.removeEventListener("focus", this.onFocus);
     window.removeEventListener("online", this.onOnline);
@@ -737,6 +752,31 @@ export default class JurnalApp extends React.Component<Props, State> {
     if (!delta) return;
     this.setState({ calYear: year, calMonth: month, navDir: delta > 0 ? "next" : "prev" });
   }
+  stepCalMonth(delta: number) {
+    const d = new Date(this.state.calYear, this.state.calMonth + delta, 1);
+    this.setCalMonth(d.getFullYear(), d.getMonth());
+  }
+  /** Prev / next for whichever date view is up: the open day sheet, else the
+      calendar month or the per-jam day. Shared by the bottom pager and ← / →. */
+  stepDate(delta: number): boolean {
+    const st = this.state;
+    if (st.dayView) this.shiftDayView(delta);
+    else if (st.view === "calendar") this.stepCalMonth(delta);
+    else if (st.view === "hourly") this.shiftHourlyDate(delta);
+    else return false;
+    this.scrollViewTop();
+    return true;
+  }
+  /** The pager sits at the bottom of a possibly long page — show the day /
+      month it moved to from its heading. */
+  scrollViewTop() {
+    try {
+      if (this.state.dayView) this.dayPageEl?.scrollTo(0, 0);
+      else window.scrollTo(0, 0);
+    } catch {
+      /* ignore */
+    }
+  }
   setHourlyDate(iso: string) {
     if (!iso || iso === this.state.hourlyDate) return;
     this.setState({ hourlyDate: iso, navDir: dirBetween(this.state.hourlyDate, iso) });
@@ -815,11 +855,7 @@ export default class JurnalApp extends React.Component<Props, State> {
     const d = parseD(cur);
     d.setDate(d.getDate() + deltaDays);
     this.setState({ dayView: toISO(d), navDir: deltaDays > 0 ? "next" : "prev" });
-    try {
-      window.scrollTo(0, 0);
-    } catch {
-      /* ignore */
-    }
+    this.scrollViewTop();
   }
 
   // ---------- calendar ----------
@@ -2084,6 +2120,11 @@ export default class JurnalApp extends React.Component<Props, State> {
     );
   }
 
+  /** The mobile ＋ button — the bottom pager steps aside for it. */
+  fabShown() {
+    return this.state.width < 860 && !this.props.shared && !this.overlayOpen();
+  }
+
   renderApp() {
     const s = this.state;
     const shared = this.props.shared;
@@ -2290,7 +2331,7 @@ export default class JurnalApp extends React.Component<Props, State> {
         </Presence>
 
         {/* Floating action button — reachable add on mobile without going to the top */}
-        <Presence show={isMobile && !shared && !this.overlayOpen(s)} exitMs={240}>
+        <Presence show={this.fabShown()} exitMs={240}>
           <button
             onClick={() => this.openNew()}
             className="jkk-fab"
@@ -2475,6 +2516,67 @@ export default class JurnalApp extends React.Component<Props, State> {
     );
   }
 
+  // ---------- PAGER (prev · Hari Ini · next, under the date views) ----------
+  // Sticky to the bottom edge so it stays under the thumb on phones and in
+  // reach on long pages on desktop; the header arrows remain for the top.
+  renderPager(o: {
+    unit: "day" | "month";
+    prevLabel: string;
+    nextLabel: string;
+    atToday: boolean;
+    onToday: () => void;
+    /** Leave room on the right for the mobile ＋ button and line up with it. */
+    besideFab?: boolean;
+    style?: CSSProperties;
+  }) {
+    const isMobile = this.state.width < 860;
+    const bare = this.state.width < 350;
+    const noun = o.unit === "day" ? "Hari" : "Bulan";
+    const btn: CSSProperties = { ...pagerBtn, height: isMobile ? 44 : 40 };
+    return (
+      <div
+        className="jkk-noprint"
+        style={{
+          position: "sticky",
+          // Centred on the 58px FAB (bottom 20) when beside it.
+          bottom: `calc(${o.besideFab ? 23 : 14}px + env(safe-area-inset-bottom, 0px))`,
+          zIndex: 12,
+          display: "flex",
+          justifyContent: "center",
+          marginTop: 18,
+          paddingRight: o.besideFab ? 72 : 0,
+          pointerEvents: "none",
+          ...o.style,
+        }}
+      >
+        <nav aria-label={`Navigasi ${noun.toLowerCase()}`} style={pagerBar}>
+          <button onClick={() => this.stepDate(-1)} className="jkk-pager-btn" style={{ ...btn, justifyContent: "flex-start" }} title={`${noun} sebelumnya (←)`} aria-label={`${noun} sebelumnya`}>
+            <span style={pagerGlyph}>‹</span>
+            {!bare && o.prevLabel}
+          </button>
+          <button
+            onClick={() => { o.onToday(); this.scrollViewTop(); }}
+            disabled={o.atToday}
+            className="jkk-pager-btn"
+            style={{ ...btn, color: "var(--accent)", padding: "0 12px" }}
+          >
+            Hari Ini
+          </button>
+          <button onClick={() => this.stepDate(1)} className="jkk-pager-btn" style={{ ...btn, justifyContent: "flex-end" }} title={`${noun} berikutnya (→)`} aria-label={`${noun} berikutnya`}>
+            {!bare && o.nextLabel}
+            <span style={pagerGlyph}>›</span>
+          </button>
+        </nav>
+      </div>
+    );
+  }
+  /** Pager labels for a day-stepping view: the neighbouring dates. */
+  dayPagerLabels(iso: string) {
+    const opts: Intl.DateTimeFormatOptions =
+      this.state.width < 860 ? { day: "numeric", month: "short" } : { weekday: "short", day: "numeric", month: "short" };
+    return { prevLabel: fmt(addDaysISO(iso, -1), opts), nextLabel: fmt(addDaysISO(iso, 1), opts) };
+  }
+
   // ---------- PER JAM (timeline harian ala kalender) ----------
   renderHourly() {
     const day = this.buildHourlyDay();
@@ -2494,9 +2596,14 @@ export default class JurnalApp extends React.Component<Props, State> {
             onChange={(e) => this.setHourlyDate(e.target.value)}
             style={{ ...smallDateInput, flex: "none" }}
           />
-          <button onClick={() => this.setHourlyDate(todayISO())} style={calNavBtn}>Hari Ini</button>
-          <button onClick={() => this.shiftHourlyDate(-1)} style={calArrow} aria-label="Hari sebelumnya">‹</button>
-          <button onClick={() => this.shiftHourlyDate(1)} style={calArrow} aria-label="Hari berikutnya">›</button>
+          {/* On phones the bottom pager carries these; the header has no room. */}
+          {this.state.width >= 860 && (
+            <>
+              <button onClick={() => this.setHourlyDate(todayISO())} style={calNavBtn}>Hari Ini</button>
+              <button onClick={() => this.shiftHourlyDate(-1)} style={calArrow} aria-label="Hari sebelumnya">‹</button>
+              <button onClick={() => this.shiftHourlyDate(1)} style={calArrow} aria-label="Hari berikutnya">›</button>
+            </>
+          )}
         </div>
         {/* Keyed on the date: stepping days slides the new one in. */}
         <div key={day.iso} className={`jkk-nav-${this.state.navDir}`}>
@@ -2567,6 +2674,13 @@ export default class JurnalApp extends React.Component<Props, State> {
           </div>
         )}
         </div>
+        {this.renderPager({
+          unit: "day",
+          ...this.dayPagerLabels(day.iso),
+          atToday: day.iso === todayISO(),
+          onToday: () => this.setHourlyDate(todayISO()),
+          besideFab: this.fabShown(),
+        })}
       </div>
     );
   }
@@ -2580,14 +2694,22 @@ export default class JurnalApp extends React.Component<Props, State> {
       q && cal.shown === 0
         ? this.nearestMatchISO(toISO(new Date(this.state.calYear, this.state.calMonth, 15)))
         : null;
+    const now = new Date();
+    const goToday = () => this.setCalMonth(now.getFullYear(), now.getMonth());
+    // Neighbouring months for the pager; the year only when it changes.
+    const monthLabel = (delta: number) => {
+      const d = new Date(this.state.calYear, this.state.calMonth + delta, 1);
+      const name = fmt(toISO(d), { month: this.state.width < 860 ? "short" : "long" });
+      return d.getFullYear() === this.state.calYear ? name : `${name} ${d.getFullYear()}`;
+    };
     return (
       <div style={{ maxWidth: 1060, margin: "0 auto" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
           <h2 style={{ fontSize: 22, fontWeight: 720, margin: 0, letterSpacing: "-.025em", textTransform: "capitalize" }}>{cal.label}</h2>
           <div style={{ flex: 1 }} />
-          <button onClick={() => { const t = new Date(); this.setCalMonth(t.getFullYear(), t.getMonth()); }} style={calNavBtn}>Hari Ini</button>
-          <button onClick={() => { const d = new Date(this.state.calYear, this.state.calMonth - 1, 1); this.setCalMonth(d.getFullYear(), d.getMonth()); }} style={calArrow} aria-label="Bulan sebelumnya">‹</button>
-          <button onClick={() => { const d = new Date(this.state.calYear, this.state.calMonth + 1, 1); this.setCalMonth(d.getFullYear(), d.getMonth()); }} style={calArrow} aria-label="Bulan berikutnya">›</button>
+          <button onClick={goToday} style={calNavBtn}>Hari Ini</button>
+          <button onClick={() => this.stepCalMonth(-1)} style={calArrow} aria-label="Bulan sebelumnya">‹</button>
+          <button onClick={() => this.stepCalMonth(1)} style={calArrow} aria-label="Bulan berikutnya">›</button>
         </div>
         {!!q && (
           <div style={filterNote}>
@@ -2638,6 +2760,15 @@ export default class JurnalApp extends React.Component<Props, State> {
         </div>
         </div>
         <p style={{ margin: "13px 2px", color: "var(--text-3)", fontSize: 12.5 }}>{this.props.shared ? "Klik tanggal untuk melihat kegiatan hari itu" : "Klik tanggal untuk menambah kegiatan"} · arahkan kursor ke garis untuk lihat judul, klik untuk membuka.</p>
+        {this.renderPager({
+          unit: "month",
+          prevLabel: monthLabel(-1),
+          nextLabel: monthLabel(1),
+          atToday: this.state.calYear === now.getFullYear() && this.state.calMonth === now.getMonth(),
+          onToday: goToday,
+          besideFab: this.fabShown(),
+          style: { marginTop: 4 },
+        })}
       </div>
     );
   }
@@ -2680,8 +2811,19 @@ export default class JurnalApp extends React.Component<Props, State> {
     const day = this.buildDay(this.state.dayView!);
     const isMobile = this.state.width < 860;
     const isToday = day.iso === todayISO();
+    const goToday = () => {
+      this.setState({ dayView: todayISO(), navDir: dirBetween(day.iso, todayISO()) });
+      this.scrollViewTop();
+    };
     return (
-      <div className="jkk-page" style={{ position: "fixed", inset: 0, zIndex: 45, background: "var(--bg)", overflow: "auto", overscrollBehavior: "contain" }}>
+      <div
+        ref={(el) => {
+          this.dayPageEl = el;
+        }}
+        className="jkk-page"
+        // Column so the pager rests on the bottom edge even on an empty day.
+        style={{ position: "fixed", inset: 0, zIndex: 45, background: "var(--bg)", overflow: "auto", overscrollBehavior: "contain", display: "flex", flexDirection: "column" }}
+      >
         <div style={{ position: "sticky", top: 0, zIndex: 5, display: "flex", alignItems: "center", gap: 12, padding: "12px clamp(14px,4vw,26px)", background: "var(--surface)", borderBottom: "1px solid var(--sep)", backdropFilter: "saturate(180%) blur(20px)" }}>
           <button onClick={() => this.closeDay()} style={backBtn} title="Kembali ke kalender">{isMobile ? "‹" : "‹ Kalender"}</button>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -2691,7 +2833,7 @@ export default class JurnalApp extends React.Component<Props, State> {
           {/* Step day by day without bouncing back to the calendar. */}
           <button onClick={() => this.shiftDayView(-1)} style={calArrow} title="Hari sebelumnya" aria-label="Hari sebelumnya">‹</button>
           {!isToday && !isMobile && (
-            <button onClick={() => this.setState({ dayView: todayISO(), navDir: dirBetween(day.iso, todayISO()) })} style={calNavBtn}>Hari Ini</button>
+            <button onClick={goToday} style={calNavBtn}>Hari Ini</button>
           )}
           <button onClick={() => this.shiftDayView(1)} style={calArrow} title="Hari berikutnya" aria-label="Hari berikutnya">›</button>
           {!this.props.shared && (
@@ -2699,7 +2841,7 @@ export default class JurnalApp extends React.Component<Props, State> {
           )}
         </div>
         {/* Keyed on the date so stepping days slides, not a silent swap. */}
-        <div key={day.iso} className={`jkk-nav-${this.state.navDir}`} style={{ maxWidth: 820, margin: "0 auto", padding: "clamp(16px,3vw,26px)" }}>
+        <div key={day.iso} className={`jkk-nav-${this.state.navDir}`} style={{ flex: "1 0 auto", width: "100%", maxWidth: 820, margin: "0 auto", padding: "clamp(16px,3vw,26px)" }}>
           {!day.empty && day.hidden > 0 && (
             <div style={filterNote}>
               <span>{day.hidden} kegiatan lain pada tanggal ini disembunyikan oleh pencarian.</span>
@@ -2727,6 +2869,14 @@ export default class JurnalApp extends React.Component<Props, State> {
             {day.items.map((it, i) => this.renderListCard(it, i))}
           </div>
         </div>
+        {this.renderPager({
+          unit: "day",
+          ...this.dayPagerLabels(day.iso),
+          atToday: isToday,
+          onToday: goToday,
+          style: { marginTop: 0, padding: "0 clamp(14px,4vw,26px)", flex: "none" },
+        })}
+        <div style={{ height: `calc(14px + env(safe-area-inset-bottom, 0px))`, flex: "none" }} />
       </div>
     );
   }
@@ -3404,6 +3554,11 @@ function sharedAnchor(sh: SharedJournal): string {
 function dirBetween(fromISO: string, toISO: string): NavDir {
   return toISO > fromISO ? "next" : toISO < fromISO ? "prev" : "none";
 }
+function addDaysISO(iso: string, days: number): string {
+  const d = parseD(iso);
+  d.setDate(d.getDate() + days);
+  return toISO(d);
+}
 
 // ===================================================================
 // Shared style constants
@@ -3586,6 +3741,35 @@ const calArrow: CSSProperties = {
   cursor: "pointer",
   lineHeight: 1,
 };
+// Floating bar under the date views: equal outer columns keep "Hari Ini" centred.
+const pagerBar: CSSProperties = {
+  pointerEvents: "auto",
+  display: "grid",
+  gridTemplateColumns: "1fr auto 1fr",
+  alignItems: "center",
+  gap: 2,
+  padding: 3,
+  maxWidth: "100%",
+  background: "var(--surface)",
+  border: "1px solid var(--sep-2)",
+  borderRadius: 14,
+  boxShadow: "var(--shadow)",
+};
+const pagerBtn: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 7,
+  border: "none",
+  background: "transparent",
+  color: "var(--text)",
+  borderRadius: 11,
+  padding: "0 14px",
+  fontSize: 14,
+  fontWeight: 600,
+  whiteSpace: "nowrap",
+  cursor: "pointer",
+};
+const pagerGlyph: CSSProperties = { fontSize: 21, lineHeight: 1, marginTop: -2 };
 // Search feedback: spinner in the box, live result chip, and the note strip the
 // date-anchored views use to explain what the query is hiding.
 const searchSpinner: CSSProperties = {

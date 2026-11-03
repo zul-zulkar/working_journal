@@ -622,6 +622,19 @@ button {
 .jkk-cal-cell {
   transition: background-color 0.2s ease;
 }
+/* Bottom pager under the calendar / per-jam / day views */
+.jkk-pager-btn:disabled {
+  opacity: 0.38;
+  cursor: default !important;
+}
+.jkk-pager-btn:not(:disabled):active {
+  background-color: var(--fill) !important;
+}
+@media (hover: hover) {
+  .jkk-pager-btn:not(:disabled):hover {
+    background-color: var(--fill) !important;
+  }
+}
 .jkk-cal-cell:active {
   background-color: var(--fill) !important;
 }
