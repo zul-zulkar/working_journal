@@ -21,10 +21,10 @@ Diimplementasikan dari prototipe Claude Design (`prototype/`) sesuai brief di
 - Seluruh aplikasi & API dikunci satu kata sandi pemilik (`APP_PASSWORD`,
   `middleware.ts` + cookie sesi httpOnly bertanda tangan HMAC, 30 hari bergeser).
 - Yang tetap publik tanpa login: `/share/[token]` (tampilan sama dengan aplikasi
-  utama — List/Grid/Kalender/Tabel/Per Jam — dalam mode hanya-baca, membaca data
-  live dari Sheets; server hanya mengirim kegiatan dalam rentang tanggal tautan,
-  dan token ditandatangani per rentang sehingga rentangnya tidak bisa diubah
-  penerima), `/demo` (contoh tampilan publik dengan
+  utama — List/Grid/Kalender/Tabel/Per Jam, dibuka di tab Kalender — dalam mode
+  hanya-baca, membaca data live dari Sheets; server hanya mengirim kegiatan
+  dalam rentang tanggal tautan, dan token ditandatangani per rentang sehingga
+  rentangnya tidak bisa diubah penerima), `/demo` (contoh tampilan publik dengan
   data fiktif), `/login`, dan `/api/image/*` (gambar Drive legacy untuk laporan).
 - Sinkron lintas perangkat: setiap tab memeriksa perubahan tiap 15 detik (dan
   saat tab kembali aktif). Simpan memakai revisi (`baseRev`); jika perangkat lain

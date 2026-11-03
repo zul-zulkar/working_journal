@@ -37,6 +37,8 @@ const CAL_BAR_H = 5;
 // Height (px) of one hour row in the "Per Jam" day timeline.
 const HOUR_H = 52;
 const DEFAULT_VIEW: View = "list";
+// A shared link always opens on the calendar of the shared range.
+const SHARED_VIEW: View = "calendar";
 // Keystroke -> re-filter delay. Long enough that the "sedang mencari" state is
 // actually visible, short enough that results never feel late.
 const SEARCH_DEBOUNCE = 280;
@@ -268,7 +270,7 @@ export default class JurnalApp extends React.Component<Props, State> {
       loaded: false,
       error: null,
       theme: "light",
-      view: DEFAULT_VIEW,
+      view: shared ? SHARED_VIEW : DEFAULT_VIEW,
       search: "",
       searchApplied: "",
       searching: false,
@@ -313,13 +315,12 @@ export default class JurnalApp extends React.Component<Props, State> {
     window.addEventListener("popstate", this.onPopState);
     if (this.props.shared) {
       // Data came with the page — no load, sync, polling or paste-to-upload.
+      // Only the theme is taken from saved prefs; the tab is always SHARED_VIEW.
       const prefs = this.readPrefs();
       this.setState({
         loaded: true,
         width: window.innerWidth,
         theme: prefs.theme || "light",
-        view: prefs.view || DEFAULT_VIEW,
-        sort: prefs.sort || "date-desc",
       });
       return;
     }
@@ -383,7 +384,10 @@ export default class JurnalApp extends React.Component<Props, State> {
   savePrefs() {
     try {
       const { theme, view, sort } = this.state;
-      localStorage.setItem(PREFS_KEY, JSON.stringify({ theme, view, sort }));
+      // The public view remembers only the theme, so browsing a shared link
+      // never changes the tab / sort the owner's own app opens with.
+      const next = this.props.shared ? { ...this.readPrefs(), theme } : { theme, view, sort };
+      localStorage.setItem(PREFS_KEY, JSON.stringify(next));
     } catch {
       /* ignore */
     }
@@ -2997,7 +3001,7 @@ export default class JurnalApp extends React.Component<Props, State> {
             )}
           </div>
           <div style={{ padding: 20, overflow: "auto", flex: 1, overscrollBehavior: "contain" }}>
-            <p style={{ margin: "0 0 18px", fontSize: 13.5, color: "var(--text-2)", lineHeight: 1.5 }}>Penerima melihat tampilan yang sama dengan aplikasi ini (List, Grid, Kalender, Tabel, Per Jam) dalam mode hanya-baca — berisi kegiatan pada rentang tanggal di bawah saja. Tautan di atas otomatis diperbarui.</p>
+            <p style={{ margin: "0 0 18px", fontSize: 13.5, color: "var(--text-2)", lineHeight: 1.5 }}>Penerima melihat tampilan yang sama dengan aplikasi ini (List, Grid, Kalender, Tabel, Per Jam) dalam mode hanya-baca, dibuka langsung di Kalender — berisi kegiatan pada rentang tanggal di bawah saja. Tautan di atas otomatis diperbarui.</p>
             <div style={{ marginBottom: 16 }}>
               <label style={{ ...fieldLabel, display: "block", margin: "0 0 7px" }}>Judul Laporan</label>
               <input className="jkk-field" value={cfg.title} onChange={(e) => this.setCfg({ title: e.target.value })} style={textInput} />
