@@ -66,6 +66,34 @@ async function jurnalFetch(path, init) {
   return { ok: true, data, origin };
 }
 
+// ── Daftar Tautan Jurnal (/api/shares) ───────────────────────────────────────
+// Link laporan yang dibuat ekstensi dicatat di Daftar Tautan supaya terlihat &
+// bisa dicabut dari Jurnal. Token Bagikan deterministik (rentang & judul sama →
+// token sama), sedangkan POST /api/shares mengaktifkan lagi token yang sudah
+// dicabut — jadi status token dicek dulu dan link yang dicabut tidak dipakai.
+// Daftar dicache sebentar agar satu kali kirim tidak membacanya per tanggal.
+const SHARES_TTL = 30000;
+let sharesCache = null; // { at, origin, byToken: Map<token, ShareLink> }
+
+/** "active" | "revoked" | "recorded" | "unavailable" (Jurnal versi lama / gagal). */
+async function recordShare(origin, token) {
+  if (!sharesCache || sharesCache.origin !== origin || Date.now() - sharesCache.at > SHARES_TTL) {
+    const list = await jurnalFetch("/api/shares");
+    if (!list.ok || !Array.isArray(list.data.shares)) return "unavailable";
+    sharesCache = { at: Date.now(), origin, byToken: new Map(list.data.shares.map((s) => [s.token, s])) };
+  }
+  const known = sharesCache.byToken.get(token);
+  if (known) return known.revokedAt ? "revoked" : "active";
+  const reg = await jurnalFetch("/api/shares", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  if (!reg.ok) return "unavailable";
+  sharesCache.byToken.set(token, reg.data.share || { token, revokedAt: "" });
+  return "recorded";
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     switch (msg && msg.type) {
@@ -93,7 +121,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
-        return r.ok && r.data.token ? { ok: true, url: r.origin + "/share/" + r.data.token } : r.ok ? fail("http", "Token Bagikan kosong.") : r;
+        if (!r.ok) return r;
+        const token = r.data.token;
+        if (!token) return fail("http", "Token Bagikan kosong.");
+        if ((await recordShare(r.origin, token)) === "revoked") {
+          const range = msg.from + (msg.to && msg.to !== msg.from ? " s.d. " + msg.to : "");
+          return fail(
+            "revoked",
+            "Link laporan Jurnal " + range + " sudah dicabut di Daftar Tautan. Aktifkan lagi di Jurnal, atau pilih opsi data dukung lain.",
+          );
+        }
+        return { ok: true, url: r.origin + "/share/" + token };
       }
       case "openOptions":
         await chrome.runtime.openOptionsPage();

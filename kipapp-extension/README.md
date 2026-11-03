@@ -55,6 +55,12 @@ Yang diambil hanya kegiatan dengan tanggal mulai di dalam periode SKP terpilih.
 - *Selalu link laporan Jurnal*, *Link bukti pertama saja*, *Satu link tetap*
   (misalnya `s.bps.go.id/...` per triwulan), atau *Kosongkan*.
 
+Link laporan Jurnal dibuat saat **Kirim** (satu link per tanggal) dan dicatat di
+**Daftar Tautan** Jurnal, jadi bisa dilihat dan dicabut dari sana. Link yang sudah
+dicabut tidak diaktifkan lagi oleh ekstensi: kegiatan pada tanggal itu gagal dengan
+pesan "sudah dicabut". Aktifkan lagi link-nya di Jurnal, atau pilih opsi data
+dukung lain.
+
 ## Pengaman
 
 - **Tidak menggandakan kegiatan:** sebelum mengirim, daftar kegiatan KipApp untuk

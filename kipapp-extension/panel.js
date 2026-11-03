@@ -284,7 +284,7 @@
     const key = from + "|" + to;
     if (!cache.has(key)) {
       const r = await bg({ type: "jurnal:share", from, to, title: shareTitle(from, to) });
-      if (!r.ok) throw new Error("Gagal membuat link laporan Jurnal: " + r.error);
+      if (!r.ok) throw new Error(r.code === "revoked" ? r.error : "Gagal membuat link laporan Jurnal: " + r.error);
       cache.set(key, r.url);
     }
     return cache.get(key);
