@@ -169,21 +169,29 @@ export function Segmented<T extends string>({
  * a grabber; dragging the grabber/header down past a threshold (or flicking)
  * dismisses it, otherwise it springs back. `onRequestClose` may return false to
  * veto (e.g. the user cancelled "buang perubahan?") — the sheet then settles.
+ *
+ * A tap on the backdrop closes the modal only when the press also *started* on
+ * the backdrop, so selecting text inside the card and releasing outside it never
+ * dismisses it. `dismissOnBackdrop={false}` ignores backdrop taps entirely (the
+ * card gives a small nudge instead) — for panels that are easy to lose by accident.
  */
 export function ModalFrame({
   isMobile,
   onRequestClose,
   overlayStyle,
   cardStyle,
+  dismissOnBackdrop = true,
   children,
 }: {
   isMobile: boolean;
   onRequestClose: () => boolean | void;
   overlayStyle: CSSProperties;
   cardStyle: CSSProperties;
+  dismissOnBackdrop?: boolean;
   children: ReactNode;
 }) {
   const card = useRef<HTMLDivElement>(null);
+  const pressedBackdrop = useRef(false);
   const drag = useRef<{
     id: number;
     y0: number;
@@ -244,12 +252,30 @@ export function ModalFrame({
     el.style.transform = "";
   };
 
+  const onBackdropClick = (e: React.MouseEvent) => {
+    const started = pressedBackdrop.current;
+    pressedBackdrop.current = false;
+    if (e.target !== e.currentTarget || !started) return;
+    if (dismissOnBackdrop) {
+      onRequestClose();
+      return;
+    }
+    const el = card.current;
+    if (el && el.animate && !prefersReducedMotion()) {
+      el.animate(
+        [{ transform: "scale(1)" }, { transform: "scale(1.018)" }, { transform: "scale(1)" }],
+        { duration: 260, easing: "ease-out" },
+      );
+    }
+  };
+
   return (
     <div
       className="jkk-scrim"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onRequestClose();
+      onPointerDown={(e) => {
+        pressedBackdrop.current = e.target === e.currentTarget;
       }}
+      onClick={onBackdropClick}
       style={overlayStyle}
     >
       <div

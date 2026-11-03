@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { seedData } from "@/lib/seed";
-import { buildReport } from "@/lib/report";
-import ShareReport from "@/components/ShareReport";
+import { journalInRange } from "@/lib/report";
+import JurnalApp from "@/components/JurnalApp";
 
 // Public example of what a shared report looks like — built from the bundled
 // sample data (lib/seed.ts), never from the owner's spreadsheet, so it is safe
@@ -13,17 +13,19 @@ export const metadata: Metadata = {
   description: "Contoh tampilan publik laporan kegiatan kerja (data fiktif).",
 };
 
+const FROM = "2026-06-24";
+const TO = "2026-07-08";
+
 export default function DemoPage() {
-  const report = buildReport(seedData(), {
-    title: "Contoh Laporan Kegiatan Kerja",
-    from: "2026-06-24",
-    to: "2026-07-08",
-    stats: true,
-    timeline: true,
-    hourly: true,
-    grid: true,
-    table: true,
-    report: true,
-  });
-  return <ShareReport report={report} demo />;
+  return (
+    <JurnalApp
+      shared={{
+        title: "Contoh Laporan Kegiatan Kerja",
+        from: FROM,
+        to: TO,
+        data: journalInRange(seedData(), FROM, TO),
+        demo: true,
+      }}
+    />
+  );
 }

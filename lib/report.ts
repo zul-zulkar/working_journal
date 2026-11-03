@@ -1,5 +1,15 @@
 import type { JournalData } from "./types";
-import { catById, fmt, fmtDay, imageUrl, parseD, rangeLabel, toISO, todayISO } from "./format";
+import {
+  catById,
+  fmt,
+  fmtDay,
+  imageUrl,
+  parseD,
+  rangeLabel,
+  rangesOverlap,
+  toISO,
+  todayISO,
+} from "./format";
 import {
   ActivityItem,
   DayGroup,
@@ -71,6 +81,28 @@ export function actsInRange(data: JournalData, cfg: Pick<ShareConfig, "from" | "
   return data.activities.filter(
     (a) => (a.endDate || a.startDate) >= cfg.from && a.startDate <= cfg.to,
   );
+}
+
+/**
+ * The slice of the journal a share link exposes: activities overlapping
+ * [from, to], plus the periode / Rencana Kinerja that range (or those
+ * activities) touch. Called on the server, so nothing outside the shared range
+ * is ever sent to the recipient's browser.
+ */
+export function journalInRange(data: JournalData, from: string, to: string): JournalData {
+  const activities = actsInRange(data, { from, to });
+  const usedCats = new Set(activities.map((a) => a.categoryId));
+  const usedGroups = new Set(
+    data.categories.filter((c) => usedCats.has(c.id) && c.groupId).map((c) => c.groupId as string),
+  );
+  const groups = data.groups.filter(
+    (g) => usedGroups.has(g.id) || rangesOverlap(g.startDate, g.endDate, from, to),
+  );
+  const groupIds = new Set(groups.map((g) => g.id));
+  const categories = data.categories.filter(
+    (c) => usedCats.has(c.id) || (!!c.groupId && groupIds.has(c.groupId)),
+  );
+  return { activities, categories, groups };
 }
 
 export function buildReport(data: JournalData, cfg: ShareConfig): ReportModel {

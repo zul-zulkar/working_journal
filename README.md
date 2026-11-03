@@ -20,9 +20,11 @@ Diimplementasikan dari prototipe Claude Design (`prototype/`) sesuai brief di
   Google API langsung.
 - Seluruh aplikasi & API dikunci satu kata sandi pemilik (`APP_PASSWORD`,
   `middleware.ts` + cookie sesi httpOnly bertanda tangan HMAC, 30 hari bergeser).
-- Yang tetap publik tanpa login: `/share/[token]` (laporan read-only, membaca
-  data live dari Sheets — token ditandatangani per rentang tanggal sehingga
-  rentangnya tidak bisa diubah penerima), `/demo` (contoh tampilan publik dengan
+- Yang tetap publik tanpa login: `/share/[token]` (tampilan sama dengan aplikasi
+  utama — List/Grid/Kalender/Tabel/Per Jam — dalam mode hanya-baca, membaca data
+  live dari Sheets; server hanya mengirim kegiatan dalam rentang tanggal tautan,
+  dan token ditandatangani per rentang sehingga rentangnya tidak bisa diubah
+  penerima), `/demo` (contoh tampilan publik dengan
   data fiktif), `/login`, dan `/api/image/*` (gambar Drive legacy untuk laporan).
 - Sinkron lintas perangkat: setiap tab memeriksa perubahan tiap 15 detik (dan
   saat tab kembali aktif). Simpan memakai revisi (`baseRev`); jika perangkat lain
@@ -37,7 +39,7 @@ app/
   page.tsx                  Aplikasi utama (client) → memanggil /api/*
   login/page.tsx            Halaman masuk (kata sandi pemilik)
   demo/page.tsx             Contoh tampilan publik (data fiktif lib/seed.ts)
-  share/[token]/page.tsx    Laporan publik read-only (server component)
+  share/[token]/page.tsx    Tampilan publik read-only (JurnalApp mode `shared`)
   api/
     auth/login · logout     POST → set / hapus cookie sesi
     data/route.ts           GET (baca semua + rev; ?since=rev) · PUT (simpan, cek baseRev → 409)
@@ -49,10 +51,10 @@ app/
     share/route.ts          POST → buat token Bagikan bertanda tangan (server-only secret)
 components/
   JurnalApp.tsx             UI utama: list / grid / kalender, editor, kelola kategori, share, sinkron
+                            (prop `shared` = mode hanya-baca untuk /share & /demo)
   Motion.tsx                Animasi: Presence (animasi keluar), sheet tarik-tutup, segmented, tema
   LoginForm.tsx             Form masuk
-  ReportView.tsx            Render laporan (dipakai preview in-app & /share)
-  ShareReport.tsx           Pembungkus tema untuk halaman /share publik
+  ReportView.tsx            Laporan ringkas siap cetak (tombol "Versi Cetak" di panel Bagikan)
   Lightbox.tsx              Penampil gambar
 lib/
   google.ts                 Auth service account + OAuth Drive (server-only, lazy)
@@ -135,6 +137,9 @@ npm run lint       # ESLint
    bentuk **base64** agar aman dari masalah newline: `base64 -w0 service-account.json`),
    `SHARE_TOKEN_SECRET`, dan **`APP_PASSWORD`** — tanpa `APP_PASSWORD` aplikasi
    tetap terkunci (gagal-tertutup) dan halaman masuk menampilkan peringatan.
+   Tanpa `SHARE_TOKEN_SECRET` tombol **Bagikan** tidak bisa membuat tautan (panel
+   menampilkan pesan error-nya). Setelah menambah/mengubah env var di Vercel,
+   **Redeploy** — nilai baru baru terbaca oleh deployment berikutnya.
 4. Deploy. Plan **Hobby** (gratis) cukup: aplikasi single-user, API route
    berjalan sebagai serverless function, gambar dilayani dari CDN Blob.
 

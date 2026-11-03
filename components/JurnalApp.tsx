@@ -117,6 +117,10 @@ type State = {
   /** Signed token for the current shareCfg, minted server-side (see /api/share). */
   shareToken: string | null;
   shareTokenBusy: boolean;
+  /** Why the last /api/share call failed — kept on screen in the panel, not just a toast. */
+  shareError: string | null;
+  /** Read-only detail sheet (the public view's stand-in for the editor). */
+  detailId: string | null;
   toast: string | null;
   /** Bumped per flash() so a repeated message still replays its entrance. */
   toastSeq: number;
@@ -126,7 +130,23 @@ type State = {
   sync: "ok" | "saving" | "error";
 };
 
-export default class JurnalApp extends React.Component<{}, State> {
+/**
+ * Public, read-only copy of the journal (/share/[token] and /demo): the very
+ * same UI as the owner's app, minus everything that edits, saves or calls the
+ * owner-only /api routes. `data` is already cut down to [from, to] on the
+ * server, so activities outside the shared range never reach the browser.
+ */
+export type SharedJournal = {
+  title: string;
+  from: string;
+  to: string;
+  data: JournalData;
+  /** /demo: sample data, with an explanatory banner. */
+  demo?: boolean;
+};
+type Props = { shared?: SharedJournal };
+
+export default class JurnalApp extends React.Component<Props, State> {
   private mounted = false;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private shareTokenTimer: ReturnType<typeof setTimeout> | null = null;
@@ -191,6 +211,7 @@ export default class JurnalApp extends React.Component<{}, State> {
       st.manageOpen ||
       st.dayView ||
       st.shareOpen ||
+      st.detailId ||
       st.sidebarOpen ||
       st.lightbox
     );
@@ -210,6 +231,8 @@ export default class JurnalApp extends React.Component<{}, State> {
       ? { editorOpen: false, editingId: null, form: null }
       : st.shareOpen
       ? { shareOpen: false }
+      : st.detailId
+      ? { detailId: null }
       : st.dayView
       ? { dayView: null }
       : st.manageOpen
@@ -232,10 +255,16 @@ export default class JurnalApp extends React.Component<{}, State> {
     });
   };
 
-  constructor(props: {}) {
+  constructor(props: Props) {
     super(props);
-    const today = new Date();
+    const shared = props.shared;
+    // The public view opens on the shared range (its latest activity), not on
+    // today — which may well lie outside it.
+    const anchor = shared ? sharedAnchor(shared) : todayISO();
+    const anchorD = parseD(anchor);
     this.state = {
+      // Even with the data in hand, the public view waits for mount: width,
+      // theme and "today" differ between the server render and the browser.
       loaded: false,
       error: null,
       theme: "light",
@@ -245,12 +274,12 @@ export default class JurnalApp extends React.Component<{}, State> {
       searching: false,
       filterCat: "all",
       sort: "date-desc",
-      activities: [],
-      categories: [],
-      groups: [],
-      calYear: today.getFullYear(),
-      calMonth: today.getMonth(),
-      hourlyDate: todayISO(),
+      activities: shared ? shared.data.activities : [],
+      categories: shared ? shared.data.categories : [],
+      groups: shared ? shared.data.groups : [],
+      calYear: anchorD.getFullYear(),
+      calMonth: anchorD.getMonth(),
+      hourlyDate: anchor,
       tableSortCol: null,
       tableSortDir: "asc",
       width: typeof window !== "undefined" ? window.innerWidth : 1200,
@@ -269,6 +298,8 @@ export default class JurnalApp extends React.Component<{}, State> {
       shareCfg: null,
       shareToken: null,
       shareTokenBusy: false,
+      shareError: null,
+      detailId: null,
       toast: null,
       toastSeq: 0,
       navDir: "none",
@@ -279,8 +310,20 @@ export default class JurnalApp extends React.Component<{}, State> {
   componentDidMount() {
     this.mounted = true;
     window.addEventListener("resize", this.onResize);
-    document.addEventListener("paste", this.onDocPaste);
     window.addEventListener("popstate", this.onPopState);
+    if (this.props.shared) {
+      // Data came with the page — no load, sync, polling or paste-to-upload.
+      const prefs = this.readPrefs();
+      this.setState({
+        loaded: true,
+        width: window.innerWidth,
+        theme: prefs.theme || "light",
+        view: prefs.view || DEFAULT_VIEW,
+        sort: prefs.sort || "date-desc",
+      });
+      return;
+    }
+    document.addEventListener("paste", this.onDocPaste);
     document.addEventListener("visibilitychange", this.onVisible);
     window.addEventListener("focus", this.onFocus);
     window.addEventListener("online", this.onOnline);
@@ -391,6 +434,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     });
   }
   queueSave(delay = 0) {
+    if (this.props.shared) return;
     this.dirty = true;
     this.syncEpoch++;
     if (this.state.sync !== "saving") this.setState({ sync: "saving" });
@@ -1041,6 +1085,10 @@ export default class JurnalApp extends React.Component<{}, State> {
   openEdit(id: string) {
     const a = this.state.activities.find((x) => x.id === id);
     if (!a) return;
+    if (this.props.shared) {
+      this.setState({ detailId: id });
+      return;
+    }
     this.setState({
       editorOpen: true,
       editingId: id,
@@ -1081,6 +1129,9 @@ export default class JurnalApp extends React.Component<{}, State> {
   }
   closeEditor() {
     this.setState({ editorOpen: false, editingId: null, form: null });
+  }
+  closeDetail() {
+    this.setState({ detailId: null });
   }
   /** Has the open form changed from what it started as (blank, or the activity being edited)? */
   isFormDirty(): boolean {
@@ -1532,6 +1583,7 @@ export default class JurnalApp extends React.Component<{}, State> {
           report: true,
         },
         shareToken: null,
+        shareError: null,
       },
       () => this.refreshShareToken(),
     );
@@ -1556,7 +1608,7 @@ export default class JurnalApp extends React.Component<{}, State> {
     const cfg = this.state.shareCfg;
     if (!cfg) return;
     if (this.shareTokenTimer) clearTimeout(this.shareTokenTimer);
-    this.setState({ shareToken: null, shareTokenBusy: true });
+    this.setState({ shareToken: null, shareTokenBusy: true, shareError: null });
     const seq = ++this.shareTokenSeq;
     this.shareTokenTimer = setTimeout(() => {
       this.api("/api/share", {
@@ -1575,8 +1627,12 @@ export default class JurnalApp extends React.Component<{}, State> {
         })
         .catch((err) => {
           if (!this.mounted || seq !== this.shareTokenSeq) return;
-          this.setState({ shareTokenBusy: false });
-          this.flash(err.message || "Gagal membuat tautan Bagikan");
+          // A network failure surfaces as a bare TypeError ("Failed to fetch").
+          const msg =
+            err instanceof TypeError
+              ? "Tidak dapat menghubungi server. Periksa koneksi internet."
+              : err.message || "Gagal membuat tautan Bagikan.";
+          this.setState({ shareTokenBusy: false, shareError: msg });
         });
     }, 350);
   }
@@ -1622,6 +1678,16 @@ export default class JurnalApp extends React.Component<{}, State> {
       navigator.clipboard.writeText(url).then(done, () => this.flash("Salin manual dari kotak tautan"));
     } else this.flash("Salin manual dari kotak tautan");
   }
+  /** Open the public link in a new tab — exactly what a recipient will see. */
+  shOpen() {
+    const url = this.shareUrl();
+    if (!url) {
+      this.flash("Tautan belum siap, tunggu sebentar…");
+      return;
+    }
+    window.open(url, "_blank", "noopener");
+  }
+  /** Printable report (Cetak / PDF) for the panel's title and range. */
   openReport() {
     this.setState({ shareView: true, shareOpen: false });
     if (typeof window !== "undefined") window.scrollTo(0, 0);
@@ -1759,6 +1825,7 @@ export default class JurnalApp extends React.Component<{}, State> {
         <Presence show={s.manageOpen}>{s.manageOpen && this.renderManage()}</Presence>
         <Presence show={s.editorOpen && !!s.form}>{s.editorOpen && this.renderEditor()}</Presence>
         <Presence show={s.shareOpen && !!s.shareCfg}>{s.shareOpen && this.renderShare()}</Presence>
+        <Presence show={!!s.detailId}>{s.detailId && this.renderDetail()}</Presence>
         <Presence show={!!s.lightbox}>
           {s.lightbox && <Lightbox state={s.lightbox} onClose={() => this.lbClose()} />}
         </Presence>
@@ -1804,6 +1871,8 @@ export default class JurnalApp extends React.Component<{}, State> {
   /** App mark with the sync-state dot (green saved · amber saving · red failed). */
   renderLogo() {
     const sync = this.state.sync;
+    // Nothing is ever saved from the public view, so no sync dot there.
+    if (this.props.shared) return <div style={{ ...logoBox, flex: "none" }}>J</div>;
     return (
       <div style={{ ...logoBox, position: "relative", flex: "none" }} title={SYNC_LABEL[sync]}>
         J
@@ -1851,7 +1920,9 @@ export default class JurnalApp extends React.Component<{}, State> {
         </button>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 8px 6px" }}>
           <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: ".05em" }}>Rencana Kinerja</span>
-          <button onClick={() => this.openManage()} title="Kelola" style={{ border: "none", background: "transparent", color: "var(--accent)", fontSize: 19, lineHeight: 1, cursor: "pointer", padding: "0 4px" }}>＋</button>
+          {!this.props.shared && (
+            <button onClick={() => this.openManage()} title="Kelola" style={{ border: "none", background: "transparent", color: "var(--accent)", fontSize: 19, lineHeight: 1, cursor: "pointer", padding: "0 4px" }}>＋</button>
+          )}
         </div>
         {orderedGroups.map((g) => {
           const cats = s.categories.filter((c) => c.groupId === g.id);
@@ -1883,35 +1954,57 @@ export default class JurnalApp extends React.Component<{}, State> {
 
   renderApp() {
     const s = this.state;
+    const shared = this.props.shared;
     const isMobile = s.width < 860;
     const showSidebar = !isMobile;
     const filtered = this.getFiltered();
     const hasResults = filtered.length > 0;
+    const appTitle = shared ? shared.title : "Jurnal Kegiatan";
+    const appSub = shared ? rangeLabel(shared.from, shared.to) : "Bukti Dukung SKP";
 
     return (
       <>
+        {shared?.demo && (
+          <div className="jkk-noprint jkk-in" style={demoBanner}>
+            <span style={{ fontWeight: 700, color: "var(--accent)" }}>Contoh tampilan publik</span>
+            <span>
+              Data fiktif. Laporan asli dibagikan lewat tombol <b>Bagikan</b> di aplikasi dan bisa dibuka siapa pun yang memegang tautannya — hanya untuk rentang tanggal yang dipilih.
+            </span>
+            <a href="/login" style={{ color: "var(--accent)", fontWeight: 650, textDecoration: "none", whiteSpace: "nowrap" }}>
+              Masuk ke jurnal ›
+            </a>
+          </div>
+        )}
         <div style={{ display: "flex", minHeight: "100dvh" }}>
           {/* SIDEBAR desktop */}
           {showSidebar && (
             <aside style={{ width: 266, flex: "none", borderRight: "1px solid var(--sep)", background: "var(--surface)", display: "flex", flexDirection: "column", height: "100dvh", position: "sticky", top: 0 }}>
               <div style={{ padding: "20px 18px 8px", display: "flex", alignItems: "center", gap: 10 }}>
                 {this.renderLogo()}
-                <div>
-                  <div style={{ fontWeight: 720, fontSize: 16, letterSpacing: "-.02em", lineHeight: 1.1 }}>Jurnal Kegiatan</div>
-                  <div style={{ fontSize: 11.5, color: "var(--text-3)" }}>Bukti Dukung SKP</div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 720, fontSize: 16, letterSpacing: "-.02em", lineHeight: 1.1, overflowWrap: "break-word" }}>{appTitle}</div>
+                  <div style={{ fontSize: 11.5, color: "var(--text-3)" }}>{appSub}</div>
                 </div>
               </div>
               <div style={{ padding: "8px 10px", overflow: "auto", flex: 1 }}>{this.renderNav(false)}</div>
               <div style={{ padding: 10, borderTop: "1px solid var(--sep)", display: "flex", flexDirection: "column", gap: 1 }}>
-                <button onClick={() => this.openManage()} style={sideFootBtn}>Kelola Rencana Kinerja & Periode</button>
-                <button onClick={() => this.exportExcel()} style={sideFootBtn}>Export Excel (.xlsx)</button>
-                <label style={{ ...sideFootBtn, display: "block" }}>
-                  Import Excel (.xlsx)
-                  <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(e) => this.importExcel(e)} style={{ display: "none" }} />
-                </label>
-                <button onClick={() => this.downloadTemplate()} style={sideFootBtn}>Unduh Template Excel</button>
+                {!shared && (
+                  <>
+                    <button onClick={() => this.openManage()} style={sideFootBtn}>Kelola Rencana Kinerja & Periode</button>
+                    <button onClick={() => this.exportExcel()} style={sideFootBtn}>Export Excel (.xlsx)</button>
+                    <label style={{ ...sideFootBtn, display: "block" }}>
+                      Import Excel (.xlsx)
+                      <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(e) => this.importExcel(e)} style={{ display: "none" }} />
+                    </label>
+                    <button onClick={() => this.downloadTemplate()} style={sideFootBtn}>Unduh Template Excel</button>
+                  </>
+                )}
                 <button onClick={(e) => this.toggleTheme(e)} style={sideFootBtn}>{s.theme === "dark" ? "Mode Terang" : "Mode Gelap"}</button>
-                <button onClick={() => this.logout()} style={{ ...sideFootBtn, color: "#FF3B30" }}>Keluar</button>
+                {shared ? (
+                  <div style={{ ...sideFootBtn, cursor: "default", fontSize: 12, color: "var(--text-3)" }}>Hanya-baca · dibagikan dari Jurnal Kegiatan</div>
+                ) : (
+                  <button onClick={() => this.logout()} style={{ ...sideFootBtn, color: "#FF3B30" }}>Keluar</button>
+                )}
               </div>
             </aside>
           )}
@@ -1925,13 +2018,22 @@ export default class JurnalApp extends React.Component<{}, State> {
                   <span style={hamLine} />
                   <span style={hamLine} />
                 </button>
-                <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8, fontWeight: 720, fontSize: 17, letterSpacing: "-.02em" }}>
-                  Jurnal Kegiatan
-                  {/* Save state, mirrored from the desktop logo dot. */}
-                  <span className="jkk-sync-dot" data-state={s.sync} title={SYNC_LABEL[s.sync]} style={{ position: "static", flex: "none", width: 9, height: 9, border: "none" }} />
-                </div>
-                <button onClick={() => this.openShare()} style={{ border: "none", background: "var(--fill)", color: "var(--text)", height: 38, padding: "0 13px", borderRadius: 10, fontSize: 13.5, fontWeight: 600, cursor: "pointer" }}>Bagikan</button>
-                <button onClick={(e) => this.toggleTheme(e)} aria-label="Ganti tema" style={{ border: "none", background: "var(--fill)", color: "var(--text)", width: 38, height: 38, borderRadius: 10, fontSize: 15, cursor: "pointer" }}>◐</button>
+                {shared ? (
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 720, fontSize: 16, letterSpacing: "-.02em", lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{appTitle}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--text-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{appSub}</div>
+                  </div>
+                ) : (
+                  <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8, fontWeight: 720, fontSize: 17, letterSpacing: "-.02em" }}>
+                    Jurnal Kegiatan
+                    {/* Save state, mirrored from the desktop logo dot. */}
+                    <span className="jkk-sync-dot" data-state={s.sync} title={SYNC_LABEL[s.sync]} style={{ position: "static", flex: "none", width: 9, height: 9, border: "none" }} />
+                  </div>
+                )}
+                {!shared && (
+                  <button onClick={() => this.openShare()} style={{ border: "none", background: "var(--fill)", color: "var(--text)", height: 38, padding: "0 13px", borderRadius: 10, fontSize: 13.5, fontWeight: 600, cursor: "pointer" }}>Bagikan</button>
+                )}
+                <button onClick={(e) => this.toggleTheme(e)} aria-label="Ganti tema" style={{ border: "none", background: "var(--fill)", color: "var(--text)", width: 38, height: 38, borderRadius: 10, fontSize: 15, cursor: "pointer", flex: "none" }}>◐</button>
               </div>
             )}
 
@@ -1984,9 +2086,13 @@ export default class JurnalApp extends React.Component<{}, State> {
                       <option value="date-asc">Terlama</option>
                       <option value="title">Judul A–Z</option>
                     </select>
-                    <button onClick={() => this.openShare()} style={{ border: "none", background: "var(--fill)", color: "var(--text)", borderRadius: 10, padding: "9px 15px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Bagikan</button>
-                    {/* Desktop keeps the toolbar button; mobile uses the FAB below. */}
-                    <button onClick={() => this.openNew()} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 10, padding: "9px 16px", fontSize: 14, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>＋ Kegiatan</button>
+                    {!shared && (
+                      <>
+                        <button onClick={() => this.openShare()} style={{ border: "none", background: "var(--fill)", color: "var(--text)", borderRadius: 10, padding: "9px 15px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Bagikan</button>
+                        {/* Desktop keeps the toolbar button; mobile uses the FAB below. */}
+                        <button onClick={() => this.openNew()} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 10, padding: "9px 16px", fontSize: 14, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>＋ Kegiatan</button>
+                      </>
+                    )}
                   </>
                 )}
               </div>
@@ -2026,11 +2132,11 @@ export default class JurnalApp extends React.Component<{}, State> {
             <aside className="jkk-drawer" onClick={(e) => e.stopPropagation()} style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "82%", maxWidth: 300, background: "var(--surface)", display: "flex", flexDirection: "column", boxShadow: "var(--shadow-lg)" }}>
               <div style={{ padding: "20px 18px 8px", display: "flex", alignItems: "center", gap: 10 }}>
                 {this.renderLogo()}
-                <div style={{ fontWeight: 720, fontSize: 16, letterSpacing: "-.02em", flex: 1 }}>Jurnal Kegiatan</div>
-                <button onClick={() => this.setState({ sidebarOpen: false })} aria-label="Tutup menu" style={{ border: "none", background: "var(--fill)", color: "var(--text)", width: 32, height: 32, borderRadius: "50%", fontSize: 15, cursor: "pointer" }}>✕</button>
+                <div style={{ fontWeight: 720, fontSize: 16, letterSpacing: "-.02em", flex: 1, minWidth: 0, overflowWrap: "break-word" }}>{appTitle}</div>
+                <button onClick={() => this.setState({ sidebarOpen: false })} aria-label="Tutup menu" style={{ border: "none", background: "var(--fill)", color: "var(--text)", width: 32, height: 32, borderRadius: "50%", fontSize: 15, cursor: "pointer", flex: "none" }}>✕</button>
               </div>
               <div style={{ padding: "8px 10px", overflow: "auto", flex: 1, overscrollBehavior: "contain" }}>{this.renderNav(true)}</div>
-              <div style={{ padding: 10, borderTop: "1px solid var(--sep)", display: "flex", flexDirection: "column", gap: 1 }}>
+              {!shared && <div style={{ padding: 10, borderTop: "1px solid var(--sep)", display: "flex", flexDirection: "column", gap: 1 }}>
                 <button onClick={() => this.openManage()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Kelola Rencana Kinerja & Periode</button>
                 <button onClick={() => this.exportExcel()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Export Excel (.xlsx)</button>
                 <label style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px", display: "block" }}>
@@ -2039,13 +2145,18 @@ export default class JurnalApp extends React.Component<{}, State> {
                 </label>
                 <button onClick={() => this.downloadTemplate()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px" }}>Unduh Template Excel</button>
                 <button onClick={() => this.logout()} style={{ ...sideFootBtn, fontSize: 14, padding: "11px 10px", color: "#FF3B30" }}>Keluar</button>
-              </div>
+              </div>}
+              {shared && (
+                <div style={{ padding: "12px 20px", borderTop: "1px solid var(--sep)", fontSize: 12, color: "var(--text-3)", lineHeight: 1.45 }}>
+                  {appSub} · hanya-baca
+                </div>
+              )}
             </aside>
           </div>
         </Presence>
 
         {/* Floating action button — reachable add on mobile without going to the top */}
-        <Presence show={isMobile && !this.overlayOpen(s)} exitMs={240}>
+        <Presence show={isMobile && !shared && !this.overlayOpen(s)} exitMs={240}>
           <button
             onClick={() => this.openNew()}
             className="jkk-fab"
@@ -2279,7 +2390,7 @@ export default class JurnalApp extends React.Component<{}, State> {
                 )}
                 <button onClick={() => this.clearFilters()} style={{ border: "1px solid var(--sep-2)", background: "var(--surface)", color: "var(--text)", borderRadius: 11, padding: "11px 20px", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Bersihkan pencarian</button>
               </div>
-            ) : (
+            ) : this.props.shared ? null : (
               <button onClick={() => this.openNewOn(day.iso)} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "11px 20px", fontSize: 15, fontWeight: 600, cursor: "pointer", marginTop: 16 }}>＋ Tambah Kegiatan</button>
             )}
           </div>
@@ -2392,7 +2503,7 @@ export default class JurnalApp extends React.Component<{}, State> {
           ))}
         </div>
         </div>
-        <p style={{ margin: "13px 2px", color: "var(--text-3)", fontSize: 12.5 }}>Klik tanggal untuk menambah kegiatan · arahkan kursor ke garis untuk lihat judul, klik untuk membuka.</p>
+        <p style={{ margin: "13px 2px", color: "var(--text-3)", fontSize: 12.5 }}>{this.props.shared ? "Klik tanggal untuk melihat kegiatan hari itu" : "Klik tanggal untuk menambah kegiatan"} · arahkan kursor ke garis untuk lihat judul, klik untuk membuka.</p>
       </div>
     );
   }
@@ -2410,6 +2521,14 @@ export default class JurnalApp extends React.Component<{}, State> {
               : "Tidak ada kegiatan pada rencana kinerja ini."}
           </div>
           <button onClick={() => this.clearFilters()} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "11px 20px", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Bersihkan pencarian</button>
+        </div>
+      );
+    if (this.props.shared)
+      return (
+        <div style={{ maxWidth: 420, margin: "70px auto", textAlign: "center", color: "var(--text-3)" }}>
+          <div style={{ fontSize: 44, marginBottom: 6, opacity: 0.5 }}>◔</div>
+          <div style={{ fontSize: 17, fontWeight: 640, color: "var(--text-2)" }}>Tidak ada kegiatan</div>
+          <div style={{ fontSize: 14, margin: "6px 0 0" }}>Belum ada kegiatan tercatat pada {rangeLabel(this.props.shared.from, this.props.shared.to)}.</div>
         </div>
       );
     return (
@@ -2441,7 +2560,9 @@ export default class JurnalApp extends React.Component<{}, State> {
             <button onClick={() => this.setState({ dayView: todayISO(), navDir: dirBetween(day.iso, todayISO()) })} style={calNavBtn}>Hari Ini</button>
           )}
           <button onClick={() => this.shiftDayView(1)} style={calArrow} title="Hari berikutnya" aria-label="Hari berikutnya">›</button>
-          <button onClick={() => this.openNewOn(day.iso)} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 10, padding: isMobile ? "9px 12px" : "9px 15px", fontSize: 14, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>＋{isMobile ? "" : " Tambah"}</button>
+          {!this.props.shared && (
+            <button onClick={() => this.openNewOn(day.iso)} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 10, padding: isMobile ? "9px 12px" : "9px 15px", fontSize: 14, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>＋{isMobile ? "" : " Tambah"}</button>
+          )}
         </div>
         {/* Keyed on the date so stepping days slides, not a silent swap. */}
         <div key={day.iso} className={`jkk-nav-${this.state.navDir}`} style={{ maxWidth: 820, margin: "0 auto", padding: "clamp(16px,3vw,26px)" }}>
@@ -2460,7 +2581,9 @@ export default class JurnalApp extends React.Component<{}, State> {
                   : "Tidak ada kegiatan yang cocok pada tanggal ini"}
               </div>
               {day.dayEmpty ? (
-                <button onClick={() => this.openNewOn(day.iso)} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "11px 20px", fontSize: 15, fontWeight: 600, cursor: "pointer", marginTop: 16 }}>＋ Tambah Kegiatan</button>
+                this.props.shared ? null : (
+                  <button onClick={() => this.openNewOn(day.iso)} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 11, padding: "11px 20px", fontSize: 15, fontWeight: 600, cursor: "pointer", marginTop: 16 }}>＋ Tambah Kegiatan</button>
+                )
               ) : (
                 <button onClick={() => this.clearFilters()} style={{ border: "1px solid var(--sep-2)", background: "var(--surface)", color: "var(--text)", borderRadius: 11, padding: "11px 20px", fontSize: 15, fontWeight: 600, cursor: "pointer", marginTop: 16 }}>Bersihkan pencarian</button>
               )}
@@ -2774,6 +2897,66 @@ export default class JurnalApp extends React.Component<{}, State> {
     );
   }
 
+  // ---------- DETAIL (read-only, public view) ----------
+  renderDetail() {
+    const s = this.state;
+    const a = s.activities.find((x) => x.id === s.detailId);
+    if (!a) return null;
+    const it = enrichActivity(a, s.categories);
+    const isMobile = s.width < 860;
+    return (
+      <ModalFrame
+        isMobile={isMobile}
+        onRequestClose={() => this.closeDetail()}
+        overlayStyle={overlay(isMobile)}
+        cardStyle={modalCard(isMobile)}
+      >
+          <header style={modalHeader}>
+            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-.02em", flex: 1 }}>Detail Kegiatan</h2>
+            <button onClick={() => this.closeDetail()} style={closeBtn} aria-label="Tutup">✕</button>
+          </header>
+          <div style={{ padding: 20, overflow: "auto", flex: 1, overscrollBehavior: "contain" }}>
+            <span style={catPill}>
+              <span style={{ width: 8, height: 8, borderRadius: 3, flex: "none", background: it.catColor }} />
+              {it.catName}
+            </span>
+            <h3 style={{ margin: "12px 0 5px", fontSize: 19, fontWeight: 700, letterSpacing: "-.015em", lineHeight: 1.3, overflowWrap: "break-word" }}>{it.title}</h3>
+            <div style={{ fontSize: 13.5, color: "var(--text-2)", marginBottom: 20, textTransform: "capitalize" }}>
+              {it.isRange ? it.dateLabel : fmtLong(it.startDate)}
+              {it.timeLabel && <span style={{ textTransform: "none" }}> · {it.timeLabel}</span>}
+            </div>
+            <label style={{ ...fieldLabel, display: "block", margin: "0 0 7px" }}>Capaian</label>
+            <p style={{ margin: "0 0 20px", fontSize: 14.5, lineHeight: 1.55, whiteSpace: "pre-wrap", overflowWrap: "break-word", color: it.capaian ? "var(--text)" : "var(--text-3)" }}>{it.capaian || "—"}</p>
+            <label style={{ ...fieldLabel, display: "block", margin: "0 0 9px" }}>Bukti Dukung</label>
+            {it.evCount === 0 ? (
+              <div style={{ fontSize: 13.5, color: "var(--text-3)" }}>Tidak ada bukti dukung.</div>
+            ) : (
+              <>
+                {it.images.length > 0 && (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(96px,1fr))", gap: 8, marginBottom: it.links.length ? 12 : 0 }}>
+                    {it.images.map((url, i) => (
+                      <button key={i} onClick={() => this.openLightbox(it.images, i, it.title)} aria-label={`Lihat gambar ${i + 1}`} style={{ ...thumb(96), width: "100%", height: "auto", aspectRatio: "1 / 1", backgroundColor: "var(--fill)", backgroundImage: `url('${url}')` }} />
+                    ))}
+                  </div>
+                )}
+                {it.links.length > 0 && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {it.links.map((lk, i) => (
+                      <a key={i} href={lk.url} target="_blank" rel="noopener noreferrer" style={{ ...linkChip, maxWidth: "100%" }}>↗ {lk.name}</a>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+          <footer style={modalFooter}>
+            <div style={{ flex: 1 }} />
+            <button onClick={() => this.closeDetail()} style={secondaryBtn}>Tutup</button>
+          </footer>
+      </ModalFrame>
+    );
+  }
+
   // ---------- SHARE CONFIG ----------
   renderShare() {
     const s = this.state;
@@ -2783,15 +2966,18 @@ export default class JurnalApp extends React.Component<{}, State> {
     const n = actsInRange({ activities: s.activities, categories: s.categories, groups: s.groups }, cfg).length;
     const url = this.shareUrl();
     return (
+      // Not dismissed by a tap on the backdrop: the panel holds a half-made link
+      // and was too easy to lose. ✕ / Tutup / back gesture / drag-down close it.
       <ModalFrame
         isMobile={isMobile}
         onRequestClose={() => this.closeShare()}
         overlayStyle={overlay(isMobile)}
         cardStyle={modalCard(isMobile)}
+        dismissOnBackdrop={false}
       >
           <header style={modalHeader}>
             <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-.02em", flex: 1 }}>Bagikan Laporan</h2>
-            <button onClick={() => this.closeShare()} style={closeBtn}>✕</button>
+            <button onClick={() => this.closeShare()} style={closeBtn} aria-label="Tutup">✕</button>
           </header>
           {/* Pinned (not inside the scrollable area below) so the link is the
               first thing visible — it must never require scrolling to find. */}
@@ -2800,12 +2986,18 @@ export default class JurnalApp extends React.Component<{}, State> {
               Tautan publik read-only · <b style={{ color: "var(--text)" }}>{n} kegiatan</b> disertakan
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              <input key={url ? "ready" : "busy"} className={url ? "jkk-field jkk-fade" : "jkk-field"} value={url || (s.shareTokenBusy ? "Menyiapkan tautan…" : "")} readOnly style={{ flex: 1, minWidth: 0, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--sep-2)", background: "var(--bg)", color: "var(--text-2)", fontSize: 12, outline: "none", fontFamily: "ui-monospace,monospace" }} />
+              <input key={url ? "ready" : "busy"} className={url ? "jkk-field jkk-fade" : "jkk-field"} value={url || (s.shareTokenBusy ? "Menyiapkan tautan…" : s.shareError ? "Tautan gagal dibuat" : "")} readOnly onFocus={(e) => url && e.currentTarget.select()} style={{ flex: 1, minWidth: 0, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--sep-2)", background: "var(--bg)", color: "var(--text-2)", fontSize: 12, outline: "none", fontFamily: "ui-monospace,monospace" }} />
               <button onClick={() => this.shCopy()} disabled={!url} style={{ border: "none", background: "var(--accent)", color: "#fff", borderRadius: 10, padding: "0 18px", fontSize: 14, fontWeight: 600, cursor: url ? "pointer" : "default", opacity: url ? 1 : 0.6, whiteSpace: "nowrap" }}>Salin Tautan</button>
             </div>
+            {s.shareError && (
+              <div key={s.shareError} role="alert" className="jkk-in" style={{ marginTop: 10, display: "flex", alignItems: "flex-start", gap: 12, padding: "9px 12px", borderRadius: 10, background: "rgba(255,59,48,.10)", color: "#FF3B30", fontSize: 13, lineHeight: 1.45 }}>
+                <span style={{ flex: 1, minWidth: 0 }}>{s.shareError}</span>
+                <button onClick={() => this.refreshShareToken()} style={{ ...linkBtn, color: "#FF3B30" }}>Coba lagi</button>
+              </div>
+            )}
           </div>
           <div style={{ padding: 20, overflow: "auto", flex: 1, overscrollBehavior: "contain" }}>
-            <p style={{ margin: "0 0 18px", fontSize: 13.5, color: "var(--text-2)", lineHeight: 1.5 }}>Sesuaikan judul, rentang tanggal, dan bagian yang ditampilkan — tautan di atas otomatis diperbarui.</p>
+            <p style={{ margin: "0 0 18px", fontSize: 13.5, color: "var(--text-2)", lineHeight: 1.5 }}>Penerima melihat tampilan yang sama dengan aplikasi ini (List, Grid, Kalender, Tabel, Per Jam) dalam mode hanya-baca — berisi kegiatan pada rentang tanggal di bawah saja. Tautan di atas otomatis diperbarui.</p>
             <div style={{ marginBottom: 16 }}>
               <label style={{ ...fieldLabel, display: "block", margin: "0 0 7px" }}>Judul Laporan</label>
               <input className="jkk-field" value={cfg.title} onChange={(e) => this.setCfg({ title: e.target.value })} style={textInput} />
@@ -2818,34 +3010,19 @@ export default class JurnalApp extends React.Component<{}, State> {
                 <input type="date" className="jkk-field" value={cfg.to} onChange={(e) => this.setCfg({ to: e.target.value })} style={dateInput} />
               </div>
             </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 20 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 6 }}>
               <button onClick={() => this.shQuick("week")} style={quickBtn}>Minggu ini</button>
               <button onClick={() => this.shQuick("month")} style={quickBtn}>Bulan ini</button>
               <button onClick={() => this.shQuick("30")} style={quickBtn}>30 hari</button>
               <button onClick={() => this.shQuick("all")} style={quickBtn}>Semua</button>
             </div>
-            <label style={{ ...fieldLabel, display: "block", margin: "0 0 9px" }}>Bagian yang Ditampilkan</label>
-            <div style={{ display: "flex", flexDirection: "column", gap: 2, marginBottom: 6 }}>
-              {([
-                ["stats", "Ringkasan statistik"],
-                ["timeline", "Lini masa / timeline"],
-                ["hourly", "Visualisasi per jam"],
-                ["grid", "Kartu grid + bukti"],
-                ["table", "Tabel kegiatan"],
-                ["report", "Rincian per tanggal"],
-              ] as [keyof ShareConfig, string][]).map(([key, label]) => (
-                <button key={key} onClick={() => this.setCfg({ [key]: !cfg[key] } as Partial<ShareConfig>)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", border: "none", background: "transparent", color: "var(--text)", fontSize: 14.5, padding: "9px 2px", cursor: "pointer" }}>
-                  {label}
-                  {this.Switch(!!cfg[key])}
-                </button>
-              ))}
-            </div>
-            <p style={{ margin: "14px 0 0", fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.5 }}>Catatan: siapa pun yang memegang tautan ini bisa membukanya tanpa login, tetapi hanya untuk rentang tanggal di atas — tautan dikunci tanda tangan digital sehingga rentangnya tidak bisa diubah. Mengganti rentang menghasilkan tautan baru. Isinya selalu mengikuti data terbaru di Spreadsheet.</p>
+            <p style={{ margin: "14px 0 0", fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.5 }}>Catatan: siapa pun yang memegang tautan ini bisa membukanya tanpa login, tetapi hanya untuk rentang tanggal di atas — tautan dikunci tanda tangan digital sehingga rentangnya tidak bisa diubah, dan kegiatan di luar rentang tidak pernah dikirim ke penerima. Mengganti rentang menghasilkan tautan baru. Isinya selalu mengikuti data terbaru di Spreadsheet.</p>
           </div>
           <footer style={modalFooter}>
+            <button onClick={() => this.openReport()} style={footerLinkBtn("var(--accent)")} title="Laporan ringkas untuk dicetak / disimpan sebagai PDF">Versi Cetak</button>
             <div style={{ flex: 1 }} />
-            <button onClick={() => this.closeShare()} style={secondaryBtn}>Batal</button>
-            <button onClick={() => this.openReport()} style={primaryBtn}>Buka Laporan</button>
+            <button onClick={() => this.closeShare()} style={secondaryBtn}>Tutup</button>
+            <button onClick={() => this.shOpen()} disabled={!url} style={{ ...primaryBtn, opacity: url ? 1 : 0.6, cursor: url ? "pointer" : "default", whiteSpace: "nowrap" }}>Buka Tautan ↗</button>
           </footer>
       </ModalFrame>
     );
@@ -2859,6 +3036,16 @@ function toJournal(raw: { activities?: unknown; categories?: unknown; groups?: u
     categories: Array.isArray(raw?.categories) ? (raw!.categories as Category[]) : [],
     groups: Array.isArray(raw?.groups) ? (raw!.groups as Group[]) : [],
   };
+}
+
+/** Date the public view opens on: the range's latest activity (clamped into it), else its end. */
+function sharedAnchor(sh: SharedJournal): string {
+  let best = "";
+  for (const a of sh.data.activities) {
+    const d = a.startDate < sh.from ? sh.from : a.startDate;
+    if (d <= sh.to && d > best) best = d;
+  }
+  return best || sh.to;
 }
 
 /** Direction from one ISO date to another, for the slide-in animations. */
@@ -2875,6 +3062,19 @@ const rootStyle: CSSProperties = {
   minHeight: "100dvh",
   WebkitFontSmoothing: "antialiased",
   textRendering: "optimizeLegibility",
+};
+const demoBanner: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "4px 12px",
+  padding: "10px 16px",
+  background: "var(--accent-soft)",
+  color: "var(--text-2)",
+  fontSize: 13,
+  lineHeight: 1.5,
+  textAlign: "center",
 };
 const logoBox: CSSProperties = {
   width: 30,

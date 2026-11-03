@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import { getDataReadOnly } from "@/lib/sheets";
-import { buildReport } from "@/lib/report";
+import { journalInRange } from "@/lib/report";
 import { decodeShareToken } from "@/lib/shareToken";
 import { ConfigError } from "@/lib/google";
-import ShareReport from "@/components/ShareReport";
+import JurnalApp from "@/components/JurnalApp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,10 +61,10 @@ export default async function SharePage({
     );
   }
 
+  let data;
   try {
-    const data = await getDataReadOnly();
-    const report = buildReport(data, cfg);
-    return <ShareReport report={report} />;
+    // Same UI as the owner's app (read-only), fed only the shared range.
+    data = journalInRange(await getDataReadOnly(), cfg.from, cfg.to);
   } catch (err) {
     if (err instanceof ConfigError) {
       return (
@@ -82,4 +82,5 @@ export default async function SharePage({
       />
     );
   }
+  return <JurnalApp shared={{ title: cfg.title, from: cfg.from, to: cfg.to, data }} />;
 }
