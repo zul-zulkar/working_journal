@@ -102,17 +102,31 @@ Pada run pertama (tab belum ada), aplikasi membuat tab dan mengisi contoh data
 
 1. Buat project di [Vercel](https://vercel.com) (bisa sebelum deploy —
    `vercel link` dari folder project).
-2. Di dashboard project → **Storage** → **Create Database** → **Blob** →
-   hubungkan ke project.
-3. Untuk dev lokal, salin `BLOB_READ_WRITE_TOKEN` dari halaman store tersebut
-   (atau jalankan `vercel env pull .env.local`). Di Vercel sendiri token
-   terpasang otomatis saat store terhubung.
+2. Di dashboard project → **Storage** → **Create** → **Blob** (akses **Public**),
+   lalu di halaman store → tab **Projects** → **Connect to Project**. Centang
+   **Development** juga kalau mau dipakai di laptop.
+3. Vercel menambahkan `BLOB_STORE_ID` ke project, dan di setiap deployment
+   menyuntikkan token OIDC (`VERCEL_OIDC_TOKEN`) yang berputar otomatis —
+   tidak ada token yang perlu disalin. (Store lama mungkin masih memakai
+   `BLOB_READ_WRITE_TOKEN`; itu juga tetap didukung.)
+4. Untuk dev lokal (sekali saja), dari folder project:
+
+   ```bash
+   npm i -g vercel
+   vercel login
+   vercel link
+   vercel env pull .env.development.local
+   ```
+
+   Perintah terakhir menulis `BLOB_STORE_ID` + `VERCEL_OIDC_TOKEN` ke berkas
+   **terpisah** (tidak menimpa `.env.local`) yang ikut dibaca `npm run dev`.
+   Token berlaku 12 jam dan diperbarui otomatis oleh SDK lewat login Vercel CLI.
 
 ### 3. Environment
 
 ```bash
 cp .env.local.example .env.local
-# isi GOOGLE_SHEET_ID, kredensial service account, dan BLOB_READ_WRITE_TOKEN
+# isi GOOGLE_SHEET_ID dan kredensial service account (Blob: lihat langkah 2)
 # isi APP_PASSWORD (kata sandi pemilik untuk membuka aplikasi)
 # lalu isi SHARE_TOKEN_SECRET (wajib untuk fitur Bagikan):
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
@@ -137,8 +151,8 @@ npm run lint       # ESLint
 
 1. Push repo ke GitHub, lalu **Import** di Vercel (framework terdeteksi
    otomatis sebagai Next.js — tanpa konfigurasi tambahan).
-2. Hubungkan **Blob store** ke project (Storage → Blob) —
-   `BLOB_READ_WRITE_TOKEN` terpasang otomatis.
+2. Hubungkan **Blob store** ke project (store → **Projects** → **Connect to
+   Project**) — `BLOB_STORE_ID` dan token OIDC terpasang otomatis.
 3. Set env var: `GOOGLE_SHEET_ID` dan `GOOGLE_SERVICE_ACCOUNT_JSON` (gunakan
    bentuk **base64** agar aman dari masalah newline: `base64 -w0 service-account.json`),
    `SHARE_TOKEN_SECRET`, dan **`APP_PASSWORD`** — tanpa `APP_PASSWORD` aplikasi
@@ -151,7 +165,8 @@ npm run lint       # ESLint
 
 ## Lampiran: fallback Google Drive (legacy)
 
-Jika `BLOB_READ_WRITE_TOKEN` kosong, upload gambar jatuh ke Google Drive.
+Jika `BLOB_STORE_ID` dan `BLOB_READ_WRITE_TOKEN` sama-sama kosong, upload
+gambar jatuh ke Google Drive.
 Service account **tidak punya kuota penyimpanan**, jadi jalur ini butuh OAuth
 sebagai akun Google kamu sendiri:
 

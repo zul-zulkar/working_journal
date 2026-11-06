@@ -658,12 +658,12 @@ export default class JurnalApp extends React.Component<Props, State> {
     }
     window.location.replace("/login");
   }
-  flash(msg: string) {
+  flash(msg: string, ms = 2400) {
     this.setState((s) => ({ toast: msg, toastSeq: s.toastSeq + 1 }));
     if (this.toastTimer) clearTimeout(this.toastTimer);
     this.toastTimer = setTimeout(() => {
       if (this.mounted) this.setState({ toast: null });
-    }, 2400);
+    }, ms);
   }
 
   // ---------- search ----------
@@ -1367,7 +1367,9 @@ export default class JurnalApp extends React.Component<Props, State> {
         this.setForm((ff) => ({ evidence: [...ff.evidence, ...imgs] }));
         this.flash(imgs.length + " gambar ditambahkan");
       })
-      .catch((err) => this.flash(err.message || "Gagal mengunggah gambar"));
+      // Upload errors explain their cause (see explainUploadError) — long enough
+      // to need more than the default toast time to read.
+      .catch((err) => this.flash(err.message || "Gagal mengunggah gambar", 9000));
   }
   pasteImages(e: ClipboardEvent) {
     const items = (e.clipboardData && e.clipboardData.items) || [];
@@ -1390,7 +1392,7 @@ export default class JurnalApp extends React.Component<Props, State> {
         this.setForm((ff) => ({ evidence: [...ff.evidence, ...imgs] }));
         this.flash(imgs.length + " gambar dari clipboard ditambahkan");
       })
-      .catch((err) => this.flash(err.message || "Gagal mengunggah gambar"));
+      .catch((err) => this.flash(err.message || "Gagal mengunggah gambar", 9000));
   }
   removeEvidence(eid: string) {
     this.setForm((ff) => ({ evidence: ff.evidence.filter((x) => x.id !== eid) }));

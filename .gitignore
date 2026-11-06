@@ -27,3 +27,6 @@ gcp-service-account*.json
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Vercel CLI link (vercel link)
+.vercel

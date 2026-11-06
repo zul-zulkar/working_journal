@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { storeImage } from "@/lib/storage";
-import { ConfigError } from "@/lib/google";
+import { explainUploadError, storeImage } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,10 +44,8 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ files: results });
   } catch (err) {
-    if (err instanceof ConfigError) {
-      return NextResponse.json({ error: err.message, code: "config" }, { status: 503 });
-    }
     console.error("[/api/upload]", err);
-    return NextResponse.json({ error: "Gagal mengunggah gambar." }, { status: 500 });
+    const f = explainUploadError(err);
+    return NextResponse.json({ error: f.message, code: f.code }, { status: f.status });
   }
 }
